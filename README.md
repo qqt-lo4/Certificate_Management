@@ -75,12 +75,12 @@ Certificate_Management/
 
 ## Configuration
 
-The `input/config.json` file allows filtering CA and template lists:
+The `input/config.json` file allows filtering CA and template lists using regex patterns:
 
 ```json
 {
     "CAFilter": "MyCA",
-    "TemplateFilter": "WebServer"
+    "TemplateFilter": "WebServer|CustomTemplate"
 }
 ```
 
@@ -90,6 +90,7 @@ These filters can also be edited from the **Settings** menu.
 
 ### 2.2
 - Back navigation throughout the wizard
+- Changed script to avoid shared folder in PKI server
 
 ### 2.1
 - Improved DN form UI
