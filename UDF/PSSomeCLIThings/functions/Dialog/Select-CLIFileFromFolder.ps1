@@ -56,6 +56,10 @@ function Select-CLIFileFromFolder {
         Switch parameter. When set, adds a "Do not select a file" button that returns a
         DialogResult.Action.DoNotSelect result. Useful for optional file selection scenarios.
 
+    .PARAMETER AllowCancel
+        Switch parameter. When set, adds a "Cancel" button to the navigation menu.
+        Returns a DialogResult.Action.Cancel result when selected.
+
     .PARAMETER AllowExit
         Switch parameter. When set, adds an "Exit this menu" button that returns a
         DialogResult.Action.Exit result. Allows users to cancel the operation.
@@ -106,6 +110,9 @@ function Select-CLIFileFromFolder {
         DialogResult.Action.DoNotSelect: When "Do not select a file" is chosen
         - Indicates user opted not to select any file
 
+        DialogResult.Action.Cancel: When "Cancel" is chosen
+        - Indicates user cancelled the current operation
+
         DialogResult.Action.Exit: When "Exit this menu" is chosen
         - Indicates user cancelled the operation
 
@@ -155,7 +162,7 @@ function Select-CLIFileFromFolder {
     .NOTES
         Author: Loïc Ade
         Created: 2024-09-16
-        Version: 1.2.0
+        Version: 1.3.0
 
         This function is designed for scenarios where users need to select a file from a folder
         interactively, with options for manual path entry and optional file selection.
@@ -269,6 +276,9 @@ function Select-CLIFileFromFolder {
 
         CHANGELOG:
 
+        Version 1.3.0 - 2026-03-22 - Loïc Ade
+            - Added AllowCancel parameter to display a Cancel button
+
         Version 1.2.0 - 2026-03-08 - Loïc Ade
             - Added AllowBack parameter to display a Back button
 
@@ -298,6 +308,7 @@ function Select-CLIFileFromFolder {
         [switch]$AllowOtherFile,
         [switch]$AllowNoFile,
         [switch]$AllowBack,
+        [switch]$AllowCancel,
         [switch]$AllowExit,
         [string]$SelectHeaderMessage = "Please select an item:",
         [string]$ColumnName = "Folder Name",
@@ -353,6 +364,9 @@ function Select-CLIFileFromFolder {
     }
     if ($AllowBack) {
         $aOtherMenuItems += New-CLIDialogButton -Back -Text "&Back"
+    }
+    if ($AllowCancel) {
+        $aOtherMenuItems += New-CLIDialogButton -Cancel -Text "&Cancel"
     }
     if ($AllowExit) {
         $aOtherMenuItems += New-CLIDialogButton -Exit -Text "&Exit"

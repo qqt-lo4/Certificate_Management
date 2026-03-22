@@ -137,9 +137,18 @@ function Select-CLIDialogObjectInArray {
         as ConfirmMessage. If not specified, uses default "Cancel" text. Selecting "Cancel" returns
         a DialogResult.Action.Cancel result.
 
-    .PARAMETER ShowBackButton
+    .PARAMETER AllowBack
         Switch parameter. When specified, displays a "Back" button in the navigation menu.
         Allows users to return to a previous screen in multi-level menu systems.
+        Alias: ShowBackButton (for backward compatibility).
+
+    .PARAMETER AllowCancel
+        Switch parameter. When specified, adds a "Cancel" button to the navigation menu.
+        Returns a DialogResult.Action.Cancel result when selected.
+
+    .PARAMETER AllowExit
+        Switch parameter. When specified, adds an "Exit" button to the navigation menu.
+        Returns a DialogResult.Action.Exit result when selected.
 
     .PARAMETER UseArrayPageExtractor
         Switch parameter. When specified, uses the ArrayPageExtractor object for pagination instead
@@ -246,7 +255,7 @@ function Select-CLIDialogObjectInArray {
         Module: CLIDialog
         Author: Loïc Ade
         Created: 2025-10-25
-        Version: 1.2.0
+        Version: 1.3.0
         Dependencies: New-CLIDialog, New-CLIDialogButton, New-CLIDialogSeparator, New-CLIDialogText,
                      New-CLIDialogTableItems, New-CLIDialogObjectsRow, Invoke-CLIDialog,
                      New-DialogResultValue, New-DialogResultAction, Invoke-YesNoCLIDialog,
@@ -312,6 +321,12 @@ function Select-CLIDialogObjectInArray {
 
         CHANGELOG:
 
+        Version 1.3.0 - 2026-03-22 - Loïc Ade
+            - Renamed ShowBackButton to AllowBack (ShowBackButton kept as alias) for consistency with other Select-* functions
+            - Added AllowCancel parameter to display a Cancel button
+            - Added AllowExit parameter to display an Exit button
+            - Moved Back/Cancel/Exit buttons from "Navigate to" bar to OtherMenuItems for better UX
+
         Version 1.2.0 - 2026-03-15 - Loïc Ade
             - SelectedObjects and SelectedObjectsUniqueProperty now work in single select mode
             - Automatically navigates to the page containing the selected object
@@ -374,7 +389,10 @@ function Select-CLIDialogObjectInArray {
         [string]$YesButtonText,
         [string]$NoButtonText,
         [string]$CancelButtonText,
-        [switch]$ShowBackButton,
+        [switch]$AllowCancel,
+        [switch]$AllowExit,
+        [Alias("ShowBackButton")]
+        [switch]$AllowBack,
         [switch]$UseArrayPageExtractor,
         [string]$ValueColumnName = "Value"
     )
@@ -422,7 +440,9 @@ function Select-CLIDialogObjectInArray {
                 [switch]$MultiSelect,
                 [ref]$SelectedObjectsArray,
                 [string]$SelectedObjectsUniqueProperty,
-                [switch]$ShowBackButton,
+                [switch]$AllowBack,
+                [switch]$AllowCancel,
+                [switch]$AllowExit,
                 [int]$FocusedItemIndex = -1
             )
             $aCLIObject = @()
@@ -482,10 +502,6 @@ function Select-CLIDialogObjectInArray {
             $aHiddenButtons = @()
             $aNavigationButtons = @()
 
-            if ($ShowBackButton) {
-                $aNavigationButtons += New-CLIDialogButton -Text "&Back" -Keyboard B -Back
-            }
-
             if ($PageCount -gt 1) {
                 if ($PageNumber -ne 0) {
                     $aNavigationButtons += New-CLIDialogButton -Text "&Previous page" -Keyboard P -Previous
@@ -502,12 +518,24 @@ function Select-CLIDialogObjectInArray {
                 $aCLIObject += New-CLIDialogObjectsRow -Row $aNavigationButtons -Header "Navigate to" -HeaderSeparator " : "
             }
 
+            # Add Back/Cancel buttons to OtherMenuItems
+            $aExtraItems = @()
+            if ($AllowBack) {
+                $aExtraItems += New-CLIDialogButton -Text "&Back" -Keyboard B -Back
+            }
+            if ($AllowCancel) {
+                $aExtraItems += New-CLIDialogButton -Text "&Cancel" -Keyboard C -Cancel
+            }
+            if ($AllowExit) {
+                $aExtraItems += New-CLIDialogButton -Text "E&xit" -Keyboard X -Exit
+            }
+
             # Other menu items
-            if ($OtherMenuItems) {
-                if ($OtherMenuItems[0].Type -eq "row") {
+            if ($OtherMenuItems -or ($aExtraItems.Count -gt 0)) {
+                if ($OtherMenuItems -and ($OtherMenuItems[0].Type -eq "row")) {
                     $aCLIObject += $OtherMenuItems
                 } else {
-                    $aOtherMenuItems = @()
+                    $aOtherMenuItems = $aExtraItems
                     foreach ($item in $OtherMenuItems) {
                         if ($item.Type -like "menu*") {
                             $aOtherMenuItems += $item.ConvertToButton()
@@ -722,7 +750,10 @@ function Select-CLIDialogObjectInArray {
                 OtherMenuItems = $OtherMenuItems
                 SelectedColumns = $SelectedColumns
                 SeparatorColor = $SeparatorColor
-                ShowBackButton = $ShowBackButton
+                AllowBack = $AllowBack
+                AllowCancel = $AllowCancel
+                AllowExit = $AllowExit
+                OtherMenuItemsInvisibleHeader = $OtherMenuItemsInvisibleHeader
             }
 
             if ($MultiSelect) {
@@ -756,6 +787,9 @@ function Select-CLIDialogObjectInArray {
                     return $oResult
                 }
                 "DialogResult.Action.Exit" {
+                    return $oResult
+                }
+                "DialogResult.Action.Cancel" {
                     return $oResult
                 }
                 "DialogResult.Action.Previous" {

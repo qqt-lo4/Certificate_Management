@@ -88,6 +88,9 @@ function Get-LocalizedString {
         }
     }
 
+    # Convert escape sequences to actual characters
+    $value = $value -replace '\\n', "`n"
+
     return $value
 }
 
