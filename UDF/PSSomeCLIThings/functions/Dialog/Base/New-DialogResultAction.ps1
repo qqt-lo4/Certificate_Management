@@ -143,6 +143,9 @@ function New-DialogResultAction {
     }
     if ($Value) {
         $hResult.Value = $Value
+        $hResult | Add-Member -MemberType ScriptMethod -Name "GetValue" -Value { 
+            return $this.Value
+        }
     } else {
         if ($Action -eq "Validate") {
             

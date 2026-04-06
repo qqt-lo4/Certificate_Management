@@ -23,10 +23,15 @@
 
     .NOTES
         Author: Loïc Ade
-        Created: 2025-11-22
-        Version: 1.0.0
-        Module: CLIDialog
-        Dependencies: New-CLIDialogSeparator, New-CLIDialog, Invoke-CLIDialog, New-DialogResultAction
+        Version: 1.1.0
+
+        CHANGELOG:
+
+        Version 1.1.0 - 2026-04-04 - Loïc Ade
+            - Added support for SeparatorWidthMode from New-Menu
+
+        Version 1.0.0 - 2025-11-22 - Loïc Ade
+            - Initial release
     #>
     Param(
         [Parameter(Position = 0)]
@@ -38,8 +43,14 @@
             throw "Object is not a menu"
         }
         $aDialogLines = @()
+        $hSeparatorArgs = @{ ForegroundColor = $Menu.SeparatorColor }
+        if ($Menu.SeparatorWidthMode -eq "FullWidth") {
+            $hSeparatorArgs.FullWidth = $true
+        } else {
+            $hSeparatorArgs.AutoLength = $true
+        }
         if ($Menu.Text) {
-            $aDialogLines += New-CLIDialogSeparator -Text ($Menu.Text -replace "&", "") -AutoLength -ForegroundColor $Menu.SeparatorColor 
+            $aDialogLines += New-CLIDialogSeparator @hSeparatorArgs -Text ($Menu.Text -replace "&", "")
         }
         $iRecommended = 0
         $i = 0
@@ -53,14 +64,14 @@
             $i++
         }
         if ($Menu.OtherMenuItems) {
-            $aDialogLines += New-CLIDialogSeparator -AutoLength -ForegroundColor $Menu.SeparatorColor
+            $aDialogLines += New-CLIDialogSeparator @hSeparatorArgs
             foreach ($menuitem in $Menu.OtherMenuItems) {
                 $oNewButton = $menuitem.ConvertToButton()
                 $oNewButton.AddNewLine = $true
                 $aDialogLines += $oNewButton
             }
         }
-        $aDialogLines += New-CLIDialogSeparator -AutoLength -ForegroundColor $Menu.SeparatorColor    
+        $aDialogLines += New-CLIDialogSeparator @hSeparatorArgs    
         $oDialog = New-CLIDialog -Rows $aDialogLines
         $oDialog.FocusedRow = $iRecommended
     }

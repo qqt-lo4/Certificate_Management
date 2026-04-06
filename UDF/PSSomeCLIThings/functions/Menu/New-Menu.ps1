@@ -47,10 +47,16 @@ function New-Menu {
 
     .NOTES
         Author: Loïc Ade
-        Created: 2025-11-22
-        Version: 1.0.0
-        Module: CLIDialog
-        Dependencies: New-CLIDialogButton
+        Version: 1.1.0
+
+        CHANGELOG:
+
+        Version 1.1.0 - 2026-04-04 - Loïc Ade
+            - Added theme support via Get-CLIDialogTheme for SeparatorColor
+            - New parameter: SeparatorWidthMode (AutoLength or FullWidth)
+
+        Version 1.0.0 - 2025-11-22 - Loïc Ade
+            - Initial release
     #>
     Param(
         [Parameter(Mandatory, Position = 0)]
@@ -65,7 +71,9 @@ function New-Menu {
         [scriptblock]$ExitMenuAction,
         [int]$MenuItemCount = 15,
         [switch]$PaginatedSeparator,
-        [System.ConsoleColor]$SeparatorColor = (Get-Host).UI.RawUI.ForegroundColor,
+        [ValidateSet("AutoLength", "FullWidth")]
+        [string]$SeparatorWidthMode = "AutoLength",
+        [System.ConsoleColor]$SeparatorColor = (Get-CLIDialogTheme "SeparatorColor"),
         [Alias("Item")]
         [System.ConsoleKey]$Keyboard,
         [int]$Underline = -1
@@ -80,6 +88,7 @@ function New-Menu {
         MenuItemCount = $MenuItemCount
         PaginatedSeparator = $PaginatedSeparator
         SeparatorColor = $SeparatorColor
+        SeparatorWidthMode = $SeparatorWidthMode
     }
 
     $hResult | Add-Member -MemberType ScriptMethod -Name "ConvertToButton" -Value {

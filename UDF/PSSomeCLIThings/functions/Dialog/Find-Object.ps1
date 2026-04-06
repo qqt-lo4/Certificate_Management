@@ -1,4 +1,4 @@
-﻿function Find-Object{
+﻿function Find-Object {
     <#
     .SYNOPSIS
         Displays an interactive search dialog to find and select objects using a custom search function.
@@ -153,7 +153,7 @@
         Module: CLIDialog
         Author: Loïc Ade
         Created: 2024-05-01
-        Version: 1.0.0
+        Version: 1.1.0
         Dependencies: New-CLIDialog, New-CLIDialogButton, New-CLIDialogSeparator, New-CLIDialogTextBox,
                      New-CLIDialogText, New-CLIDialogTableItems, New-CLIDialogObjectsRow, Invoke-CLIDialog,
                      New-DialogResultValue, New-DialogResultAction, Invoke-YesNoCLIDialog,
@@ -262,6 +262,10 @@
 
         CHANGELOG:
 
+        Version 1.1.0 - 2026-04-04 - Loïc Ade
+            - Added theme support via Get-CLIDialogTheme for SeparatorColor
+            - New parameters: HintColor, WarningColor
+
         Version 1.0.0 - 2024-05-01 - Loïc Ade
             - Initial release
             - Dynamic search with custom SearchFunction scriptblock
@@ -281,7 +285,7 @@
         [string]$HeaderString = "Please find an Object",
         [switch]$StarForbidden,
         [string]$InputString,
-        [System.ConsoleColor]$SeparatorColor = ([System.ConsoleColor]::Blue),
+        [System.ConsoleColor]$SeparatorColor = (Get-CLIDialogTheme "SeparatorColor"),
         [object[]]$SelectedColumns,
         [int]$ItemsPerPage = 10,
         [string]$Sort = "name",
@@ -294,7 +298,9 @@
         [string]$ConfirmMessage,
         [string]$YesButtonText,
         [string]$NoButtonText,
-        [string]$CancelButtonText
+        [string]$CancelButtonText,
+        [System.ConsoleColor]$HintColor = (Get-CLIDialogTheme "HintColor"),
+        [System.ConsoleColor]$WarningColor = (Get-CLIDialogTheme "WarningColor")
     )
     function New-FindObjectDialog {
         Param(
@@ -317,7 +323,7 @@
             New-CLIDialogTextBox -Header "Search" -Name "Search" -HeaderSeparator " :  "
         }        
         if (-not $StarForbidden) {
-            $aDialogLines += New-CLIDialogText -Text (Set-StringFormat "You can use * to find more results" -Italic) -ForegroundColor Gray -AddNewLine
+            $aDialogLines += New-CLIDialogText -Text (Set-StringFormat "You can use * to find more results" -Italic) -ForegroundColor $HintColor -AddNewLine
         }
         if ($Search) {
             $aDialogLines += New-CLIDialogSeparator -AutoLength -ForegroundColor $SeparatorColor -Text "Results"
@@ -331,7 +337,7 @@
                 }
                 $aDialogLines += New-CLIDialogSeparator -AutoLength -ForegroundColor $SeparatorColor -PageNumber $Page -PageCount $PageCount -DrawPageNumber
             } else {
-                $aDialogLines += New-CLIDialogText -Text "No results for $Search" -ForegroundColor Yellow -AddNewLine
+                $aDialogLines += New-CLIDialogText -Text "No results for $Search" -ForegroundColor $WarningColor -AddNewLine
                 $aDialogLines += New-CLIDialogSeparator -AutoLength -ForegroundColor $SeparatorColor
             }            
         } else {
@@ -475,7 +481,11 @@
             }
         }
         if ($sResult -like "*%name%*") {
-            $sResult = $sResult.Replace("%name%", $Result.Value.name)
+            if ($Result.Value -and $Result.Value.name) {
+                $sResult = $sResult.Replace("%name%", $Result.Value.name)
+            } else {
+                $sResult = $sResult.Replace("%name%", "")
+            }
         }
         return $sResult
     }

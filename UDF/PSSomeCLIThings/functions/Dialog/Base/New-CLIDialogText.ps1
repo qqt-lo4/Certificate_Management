@@ -63,11 +63,8 @@ function New-CLIDialogText {
         Creates a dynamic text object with custom arguments.
 
     .NOTES
-        Module: CLIDialog
         Author: Loïc Ade
-        Created: 2025-10-20
-        Version: 1.0.0
-        Dependencies: None
+        Version: 1.1.0
 
         This function is part of the CLI Dialog framework and is typically used with New-CLIDialog.
         The returned object includes ANSI escape sequence filtering in GetTextWidth() for accurate
@@ -82,6 +79,9 @@ function New-CLIDialogText {
 
         CHANGELOG:
 
+        Version 1.1.0 - 2026-04-03 - Loïc Ade
+            - Added theme support via Get-CLIDialogTheme for default colors
+
         Version 1.0.0 - 2025-10-20 - Loïc Ade
             - Initial release
             - Support for static and dynamic text
@@ -93,11 +93,13 @@ function New-CLIDialogText {
         [Parameter(Position = 0)]
         [AllowEmptyString()]
         [string]$Text,
-        [System.ConsoleColor]$BackgroundColor = (Get-Host).UI.RawUI.BackgroundColor,
-        [System.ConsoleColor]$ForegroundColor = (Get-Host).UI.RawUI.ForegroundColor,
+        [System.ConsoleColor]$BackgroundColor = (Get-CLIDialogTheme "BackgroundColor"),
+        [System.ConsoleColor]$ForegroundColor = (Get-CLIDialogTheme "ForegroundColor"),
         [switch]$AddNewLine,
         [scriptblock]$TextFunction,
-        [object]$TextFunctionArguments
+        [object]$TextFunctionArguments,
+        [ValidateSet("None", "Truncate", "WordWrap")]
+        [string]$OverflowMode = "Truncate"
     )
     $hResult = @{
         Type = "text"
@@ -107,29 +109,46 @@ function New-CLIDialogText {
         AddNewLine = $AddNewLine
         TextFunction = $TextFunction
         TextFunctionArguments = $TextFunctionArguments
+        OverflowMode = $OverflowMode
     }
 
     $hResult | Add-Member -MemberType ScriptMethod -Name "Draw" -Value {
         $sText = $this.GetText()
-        if (($sText -eq $null) -or ($sText -eq "")) {
-            if ($this.AddNewLine) {
-                Write-Host ""
+        if ($null -eq $sText -or $sText -eq "") {
+            if ($this.AddNewLine) { Write-Host "" } else { Write-Host "" -NoNewline }
+            return
+        }
+
+        $iWindowWidth = $host.ui.RawUI.WindowSize.Width
+        $aLines = $sText.Split("`n")
+        $aOutputLines = @()
+
+        foreach ($sLine in $aLines) {
+            if ($this.OverflowMode -ne 'None' -and $sLine.Length -gt $iWindowWidth) {
+                if ($this.OverflowMode -eq 'Truncate') {
+                    $aOutputLines += $sLine.Substring(0, $iWindowWidth - 1) + [char]0x2026
+                } else {
+                    # WordWrap : couper aux espaces
+                    $sRemaining = $sLine
+                    while ($sRemaining.Length -gt $iWindowWidth) {
+                        $iCut = $sRemaining.LastIndexOf(' ', $iWindowWidth - 1)
+                        if ($iCut -le 0) { $iCut = $iWindowWidth - 1 }
+                        $aOutputLines += $sRemaining.Substring(0, $iCut)
+                        $sRemaining = $sRemaining.Substring($iCut).TrimStart()
+                    }
+                    if ($sRemaining.Length -gt 0) { $aOutputLines += $sRemaining }
+                }
             } else {
-                Write-Host "" -NoNewline
+                $aOutputLines += $sLine
+            }
+        }
+
+        if ($aOutputLines.Count -gt 1 -or $this.AddNewLine) {
+            foreach ($sOutLine in $aOutputLines) {
+                Write-Host $sOutLine -ForegroundColor $this.ForegroundColor -BackgroundColor $this.BackgroundColor
             }
         } else {
-            $aText = $sText.Split("`n")
-            if ($aText.Count -gt 1) {
-                foreach ($sLine in $aText) {
-                    Write-Host $sLine -ForegroundColor $this.ForegroundColor -BackgroundColor $this.BackgroundColor
-                }    
-            } else {
-                if ($this.AddNewLine) {
-                    Write-Host $aText -ForegroundColor $this.ForegroundColor -BackgroundColor $this.BackgroundColor
-                } else {
-                    Write-Host $aText -NoNewline -ForegroundColor $this.ForegroundColor -BackgroundColor $this.BackgroundColor
-                }
-            }
+            Write-Host $aOutputLines[0] -NoNewline -ForegroundColor $this.ForegroundColor -BackgroundColor $this.BackgroundColor
         }
     }
 
@@ -148,7 +167,22 @@ function New-CLIDialogText {
     }
 
     $hResult | Add-Member -MemberType ScriptMethod -Name "GetTextHeight" -Value {
-        return $this.Text.Split("`n").Count
+        $sText = $this.GetText()
+        if ($null -eq $sText -or $sText -eq '') { return 1 }
+        $aLines = $sText.Split("`n")
+        if ($this.OverflowMode -eq 'WordWrap') {
+            $iWindowWidth = $host.ui.RawUI.WindowSize.Width
+            $iTotal = 0
+            foreach ($sLine in $aLines) {
+                if ($sLine.Length -gt $iWindowWidth -and $iWindowWidth -gt 0) {
+                    $iTotal += [Math]::Ceiling($sLine.Length / $iWindowWidth)
+                } else {
+                    $iTotal++
+                }
+            }
+            return $iTotal
+        }
+        return $aLines.Count
     }
 
     $hResult | Add-Member -MemberType ScriptMethod -Name "GetTextWidth" -Value {

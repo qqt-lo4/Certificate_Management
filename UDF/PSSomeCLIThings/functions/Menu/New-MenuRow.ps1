@@ -50,10 +50,15 @@ function New-MenuRow {
 
     .NOTES
         Author: Loïc Ade
-        Created: 2025-11-22
-        Version: 1.0.0
-        Module: CLIDialog
-        Dependencies: New-CLIDialogObjectsRow
+        Version: 1.1.0
+
+        CHANGELOG:
+
+        Version 1.1.0 - 2026-04-04 - Loïc Ade
+            - Added theme support via Get-CLIDialogTheme for default colors
+
+        Version 1.0.0 - 2025-11-22 - Loïc Ade
+            - Initial release
     #>
     Param(
         [Parameter(Mandatory, Position = 0)]
@@ -64,10 +69,10 @@ function New-MenuRow {
         [string]$HeaderAlign = "Left",
         [string]$Separator = " : ",
         [int]$SeparatorLocation,
-        [System.ConsoleColor]$HeaderForegroundColor = [System.ConsoleColor]::Green,
-        [System.ConsoleColor]$HeaderBackgroundColor = (Get-Host).UI.RawUI.BackgroundColor,
-        [System.ConsoleColor]$FocusedHeaderForegroundColor = [System.ConsoleColor]::Blue,
-        [System.ConsoleColor]$FocusedHeaderBackgroundColor = (Get-Host).UI.RawUI.BackgroundColor
+        [System.ConsoleColor]$HeaderForegroundColor = (Get-CLIDialogTheme "HeaderForegroundColor"),
+        [System.ConsoleColor]$HeaderBackgroundColor = (Get-CLIDialogTheme "HeaderBackgroundColor"),
+        [System.ConsoleColor]$FocusedHeaderForegroundColor = (Get-CLIDialogTheme "FocusedHeaderForegroundColor"),
+        [System.ConsoleColor]$FocusedHeaderBackgroundColor = (Get-CLIDialogTheme "FocusedHeaderBackgroundColor")
     )
     $hResult = @{
         Text = $Text

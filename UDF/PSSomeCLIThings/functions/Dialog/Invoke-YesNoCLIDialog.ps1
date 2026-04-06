@@ -119,7 +119,7 @@ function Invoke-YesNoCLIDialog {
         Module: CLIDialog
         Author: Loïc Ade
         Created: 2025-10-20
-        Version: 1.0.0
+        Version: 1.1.0
         Dependencies: New-CLIDialogText, New-CLIDialogSpace, New-CLIDialogButton, New-CLIDialogObjectsRow, New-CLIDialog, Invoke-CLIDialog
 
         This function is a high-level convenience wrapper around New-CLIDialog. It simplifies
@@ -159,6 +159,9 @@ function Invoke-YesNoCLIDialog {
 
         CHANGELOG:
 
+        Version 1.1.0 - 2026-04-04 - Loïc Ade
+            - Added theme support via Get-CLIDialogTheme for default colors
+
         Version 1.0.0 - 2025-10-20 - Loïc Ade
             - Initial release
             - Three parameter sets: YNC, NC, YN
@@ -190,12 +193,12 @@ function Invoke-YesNoCLIDialog {
         [AllowEmptyString()]
         [ValidateSet("Yes", "No", "Cancel")]
         [string]$Recommended,
-        [System.ConsoleColor]$HeaderForegroundColor = [System.ConsoleColor]::Green,
-        [System.ConsoleColor]$HeaderBackgroundColor = (Get-Host).UI.RawUI.BackgroundColor,
-        [System.ConsoleColor]$ButtonForegroundColor = (Get-Host).UI.RawUI.ForegroundColor,
-        [System.ConsoleColor]$ButtonBackgroundColor = (Get-Host).UI.RawUI.BackgroundColor,
-        [System.ConsoleColor]$FocusedButtonForegroundColor = (Get-Host).UI.RawUI.BackgroundColor,
-        [System.ConsoleColor]$FocusedButtonBackgroundColor = (Get-Host).UI.RawUI.ForegroundColor
+        [System.ConsoleColor]$HeaderForegroundColor = (Get-CLIDialogTheme "HeaderForegroundColor"),
+        [System.ConsoleColor]$HeaderBackgroundColor = (Get-CLIDialogTheme "HeaderBackgroundColor"),
+        [System.ConsoleColor]$ButtonForegroundColor = (Get-CLIDialogTheme "ForegroundColor"),
+        [System.ConsoleColor]$ButtonBackgroundColor = (Get-CLIDialogTheme "BackgroundColor"),
+        [System.ConsoleColor]$FocusedButtonForegroundColor = (Get-CLIDialogTheme "FocusedForegroundColor"),
+        [System.ConsoleColor]$FocusedButtonBackgroundColor = (Get-CLIDialogTheme "FocusedBackgroundColor")
     )
     $aCliDialogRows = @(New-CLIDialogText -Text $Message -ForegroundColor $HeaderForegroundColor -BackgroundColor $HeaderBackgroundColor -AddNewLine)
     if ($Vertical) {
@@ -249,8 +252,24 @@ function Invoke-YesNoCLIDialog {
     }
     $oDialog = New-CLIDialog -Rows $aCliDialogRows
     if ($Recommended) {
-        $iRowToFocus = ($oDialog.DynamicRows | Where-Object { $_.RowContent[1].Action -eq $Recommended }).DynamicRowId
-        $oDialog.FocusedRow = $iRowToFocus
+        if ($Vertical) {
+            # Each button is in its own Row — find the Row containing the recommended button
+            $oRecommendedRow = $oDialog.DynamicRows | Where-Object {
+                $_.RowContent | Where-Object { $_.Action -eq $Recommended }
+            }
+            if ($oRecommendedRow) {
+                $oDialog.FocusedRow = $oRecommendedRow.DynamicRowId
+            }
+        } else {
+            # All buttons are in a single Row — set FocusedItem on that Row
+            $oRow = $oDialog.DynamicRows[0]
+            for ($i = 0; $i -lt $oRow.RowContent.Count; $i++) {
+                if ($oRow.RowContent[$i].Action -eq $Recommended) {
+                    $oRow.FocusedItem = $oRow.ObjectsIndex.IndexOf($i)
+                    break
+                }
+            }
+        }
     }
     $oDialogResult = Invoke-CLIDialog $oDialog
     return $oDialogResult.Action

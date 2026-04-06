@@ -71,12 +71,16 @@ function Read-CLIDialogNewPassword {
     .NOTES
         Author: Loïc Ade
         Created: 2026-03-15
-        Version: 1.0.0
+        Version: 1.1.0
         Module: CLIDialog
         Dependencies: New-CLIDialogSeparator, New-CLIDialogTextBox, New-CLIDialogButton,
                      New-CLIDialogObjectsRow, Invoke-CLIDialog, Invoke-YesNoCLIDialog
 
         CHANGELOG:
+
+        Version 1.1.0 - 2026-04-04 - Loïc Ade
+            - Added theme support via Get-CLIDialogTheme for default colors
+            - New parameter: ErrorColor
 
         Version 1.0.0 - 2026-03-15 - Loïc Ade
             - Initial release
@@ -97,7 +101,8 @@ function Read-CLIDialogNewPassword {
         [securestring]$DefaultValue,
         [switch]$AllowBack,
         [switch]$AllowCancel,
-        [System.ConsoleColor]$SeparatorColor = [System.ConsoleColor]::Blue
+        [System.ConsoleColor]$SeparatorColor = (Get-CLIDialogTheme "SeparatorColor"),
+        [System.ConsoleColor]$ErrorColor = (Get-CLIDialogTheme "ErrorColor")
     )
 
     $bAllowEmpty = [bool]$AllowEmpty
@@ -164,7 +169,7 @@ function Read-CLIDialogNewPassword {
             $sPwd2 = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($hFormValues.Confirm))
 
             if ($sPwd1 -ne $sPwd2) {
-                Write-Host $ErrorNotMatching -ForegroundColor Red
+                Write-Host $ErrorNotMatching -ForegroundColor $ErrorColor
                 continue
             }
 

@@ -34,10 +34,15 @@ function New-MenuItem {
 
     .NOTES
         Author: Loïc Ade
-        Created: 2025-11-22
-        Version: 1.0.0
-        Module: CLIDialog
-        Dependencies: New-CLIDialogButton
+        Version: 1.1.0
+
+        CHANGELOG:
+
+        Version 1.1.0 - 2026-04-04 - Loïc Ade
+            - Added theme support via Get-CLIDialogTheme for default colors
+
+        Version 1.0.0 - 2025-11-22 - Loïc Ade
+            - Initial release
     #>
     Param(
         [Parameter(Mandatory, Position = 0)]
@@ -49,10 +54,10 @@ function New-MenuItem {
         [Parameter(Position = 2)]
         [Alias("Item")]
         [System.ConsoleKey]$Keyboard,
-        [System.ConsoleColor]$BackgroundColor = (Get-Host).UI.RawUI.BackgroundColor,
-        [System.ConsoleColor]$ForegroundColor = (Get-Host).UI.RawUI.ForegroundColor,
-        [System.ConsoleColor]$FocusedBackgroundColor = (Get-Host).UI.RawUI.ForegroundColor,
-        [System.ConsoleColor]$FocusedForegroundColor = (Get-Host).UI.RawUI.BackgroundColor,
+        [System.ConsoleColor]$BackgroundColor = (Get-CLIDialogTheme "BackgroundColor"),
+        [System.ConsoleColor]$ForegroundColor = (Get-CLIDialogTheme "ForegroundColor"),
+        [System.ConsoleColor]$FocusedBackgroundColor = (Get-CLIDialogTheme "FocusedBackgroundColor"),
+        [System.ConsoleColor]$FocusedForegroundColor = (Get-CLIDialogTheme "FocusedForegroundColor"),
         [int]$Underline = -1,
         [switch]$Recommended
     )

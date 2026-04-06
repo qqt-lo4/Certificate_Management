@@ -162,7 +162,7 @@ function Select-CLIFileFromFolder {
     .NOTES
         Author: Loïc Ade
         Created: 2024-09-16
-        Version: 1.3.0
+        Version: 1.4.0
 
         This function is designed for scenarios where users need to select a file from a folder
         interactively, with options for manual path entry and optional file selection.
@@ -276,6 +276,10 @@ function Select-CLIFileFromFolder {
 
         CHANGELOG:
 
+        Version 1.4.0 - 2026-04-04 - Loïc Ade
+            - Added theme support via Get-CLIDialogTheme for default colors
+            - New parameter: ErrorColor
+
         Version 1.3.0 - 2026-03-22 - Loïc Ade
             - Added AllowCancel parameter to display a Cancel button
 
@@ -312,12 +316,13 @@ function Select-CLIFileFromFolder {
         [switch]$AllowExit,
         [string]$SelectHeaderMessage = "Please select an item:",
         [string]$ColumnName = "Folder Name",
-        [System.ConsoleColor]$HeaderColor = (Get-Host).UI.RawUI.ForegroundColor,
-        [System.ConsoleColor]$SeparatorColor = (Get-Host).UI.RawUI.ForegroundColor,
+        [System.ConsoleColor]$HeaderColor = (Get-CLIDialogTheme "HeaderForegroundColor"),
+        [System.ConsoleColor]$SeparatorColor = (Get-CLIDialogTheme "SeparatorColor"),
         [string]$OtherFilePromptText = "Please enter a file path",
         [switch]$Recurse,
         [string]$EmptyArrayMessage = "No items in array",
-        [int]$ItemsPerPage = 8
+        [int]$ItemsPerPage = 8,
+        [System.ConsoleColor]$ErrorColor = (Get-CLIDialogTheme "ErrorColor")
     )
     # Build menu items
     $aItems = if ($Filter) {
@@ -353,7 +358,7 @@ function Select-CLIFileFromFolder {
                 }
                 $validOtherFile = Test-Path -Path $sOtherFilePath -PathType Leaf
                 if (-not $validOtherFile) {
-                    Write-Host "File path is not valid" -ForegroundColor Red
+                    Write-Host "File path is not valid" -ForegroundColor $ErrorColor
                 }
             }
             Get-Item -Path $sOtherFilePath

@@ -102,11 +102,8 @@ function New-CLIDialogCheckBox {
         Creates a compact checkbox with manual underline positioning.
 
     .NOTES
-        Module: CLIDialog
         Author: Loïc Ade
-        Created: 2025-10-20
-        Version: 1.0.0
-        Dependencies: Set-StringUnderline
+        Version: 1.1.0
 
         This function is part of the CLI Dialog framework. Unlike radio buttons, checkboxes
         are independent and multiple checkboxes can be selected simultaneously.
@@ -142,6 +139,9 @@ function New-CLIDialogCheckBox {
 
         CHANGELOG:
 
+        Version 1.1.0 - 2026-04-03 - Loïc Ade
+            - Added theme support via Get-CLIDialogTheme for default colors
+
         Version 1.0.0 - 2025-10-20 - Loïc Ade
             - Initial release
             - Independent multi-selection checkbox functionality
@@ -158,10 +158,10 @@ function New-CLIDialogCheckBox {
         [Parameter(Position = 1)]
         [bool]$Enabled,
         [System.ConsoleKey]$Keyboard,
-        [System.ConsoleColor]$BackgroundColor = (Get-Host).UI.RawUI.BackgroundColor,
-        [System.ConsoleColor]$ForegroundColor = (Get-Host).UI.RawUI.ForegroundColor,
-        [System.ConsoleColor]$FocusedBackgroundColor = (Get-Host).UI.RawUI.ForegroundColor,
-        [System.ConsoleColor]$FocusedForegroundColor = (Get-Host).UI.RawUI.BackgroundColor,
+        [System.ConsoleColor]$BackgroundColor = (Get-CLIDialogTheme "BackgroundColor"),
+        [System.ConsoleColor]$ForegroundColor = (Get-CLIDialogTheme "ForegroundColor"),
+        [System.ConsoleColor]$FocusedBackgroundColor = (Get-CLIDialogTheme "FocusedBackgroundColor"),
+        [System.ConsoleColor]$FocusedForegroundColor = (Get-CLIDialogTheme "FocusedForegroundColor"),
         [string]$Name,
         [object]$Object,
         [switch]$AddNewLine,

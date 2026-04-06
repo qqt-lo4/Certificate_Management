@@ -78,7 +78,7 @@ function New-CLIDialogTableItems {
         Module: CLIDialog
         Author: Loïc Ade
         Created: 2025-10-20
-        Version: 1.0.0
+        Version: 1.1.0
         Dependencies: Format-TableCustom, New-CLIDialogText, New-CLIDialogCheckBox, New-CLIDialogButton
 
         This function is part of the CLI Dialog framework and depends on:
@@ -91,6 +91,12 @@ function New-CLIDialogTableItems {
         4 characters for checkbox spacing when checkboxes are enabled.
 
         CHANGELOG:
+
+        Version 1.1.0 - 2026-04-03 - Loïc Ade
+            - Added theme support via Get-CLIDialogTheme
+            - New parameters: HeaderForegroundColor, ForegroundColor,
+              BackgroundColor, FocusedForegroundColor, FocusedBackgroundColor
+            - Colors are passed through to buttons and checkboxes
 
         Version 1.0.0 - 2025-10-20 - Loïc Ade
             - Initial release
@@ -108,14 +114,19 @@ function New-CLIDialogTableItems {
         [switch]$Checkbox,
         [ref]$EnabledObjectsArray,
         [string]$EnabledObjectsUniqueProperty,
-        [switch]$Space
+        [switch]$Space,
+        [System.ConsoleColor]$HeaderForegroundColor = (Get-CLIDialogTheme "TableHeaderForegroundColor"),
+        [System.ConsoleColor]$ForegroundColor = (Get-CLIDialogTheme "ForegroundColor"),
+        [System.ConsoleColor]$BackgroundColor = (Get-CLIDialogTheme "BackgroundColor"),
+        [System.ConsoleColor]$FocusedForegroundColor = (Get-CLIDialogTheme "FocusedForegroundColor"),
+        [System.ConsoleColor]$FocusedBackgroundColor = (Get-CLIDialogTheme "FocusedBackgroundColor")
     )
     $ContentMaxWidth = if ($Checkbox) {
         (Get-Host).UI.RawUI.WindowSize.Width - 4
     } else {
         (Get-Host).UI.RawUI.WindowSize.Width
     }
-    $aFormatTableItems = $Objects | Format-TableCustom -ToString -HeaderColor Green -Property $Properties -ContentMaxWidth $ContentMaxWidth
+    $aFormatTableItems = $Objects | Format-TableCustom -ToString -HeaderColor $HeaderForegroundColor -Property $Properties -ContentMaxWidth $ContentMaxWidth
     $aFormRows = @(
         # First line containing array headers
         $sFirstRowText = if ($Checkbox) {
@@ -127,14 +138,18 @@ function New-CLIDialogTableItems {
                 $aFormatTableItems[0]
             }
         }
-        New-CLIDialogText -Text $sFirstRowText -ForegroundColor Green -AddNewLine
+        New-CLIDialogText -Text $sFirstRowText -ForegroundColor $HeaderForegroundColor -AddNewLine
     )
     for ($i = 1; $i -lt $aFormatTableItems.Count; $i++) {
         $hParams = @{
             Text = $aFormatTableItems[$i]
-            Object = $Objects[$i - 1] 
-            AddNewLine = $true 
+            Object = $Objects[$i - 1]
+            AddNewLine = $true
             NoSpace = -not $Space
+            ForegroundColor = $ForegroundColor
+            BackgroundColor = $BackgroundColor
+            FocusedForegroundColor = $FocusedForegroundColor
+            FocusedBackgroundColor = $FocusedBackgroundColor
         }
         $aFormRows += if ($Checkbox) {
             if ($EnabledObjectsArray) {

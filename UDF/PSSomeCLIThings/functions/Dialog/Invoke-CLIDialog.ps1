@@ -47,7 +47,7 @@ function Invoke-CLIDialog {
 
     .PARAMETER ErrorMessageFields
         The error message to display when multiple fields fail validation. Default is
-        "Error: Somes fields have invalid values.". Only used if CustomErrorMessage is not
+        "Error: Some fields have invalid values.". Only used if CustomErrorMessage is not
         specified.
 
     .PARAMETER ErrorsPropertiesAlign
@@ -64,6 +64,12 @@ function Invoke-CLIDialog {
         A function to call when a Value-type result is returned in Execute mode. The function
         receives the selected value and should return a DialogResult object. Used for nested
         menus, drill-down interfaces, and multi-step wizards. Only applicable with -Execute.
+
+    .PARAMETER Object
+        The object to pass as argument to scriptblock-type buttons when they are executed.
+        When a button with a scriptblock is selected, this object is passed as $args[0] to
+        the scriptblock via Invoke-Command -ArgumentList. Required when using scriptblock
+        buttons that reference $args[0]. Only applicable with -Execute.
 
     .PARAMETER DontSpaceAfterDialog
         Switch parameter. When specified, suppresses the blank line normally printed after the
@@ -215,11 +221,12 @@ function Invoke-CLIDialog {
         [switch]$PauseAfterErrorMessage,
         [string]$CustomErrorMessage = "",
         [string]$ErrorMessageOneField = "Error: The following field has an invalid value.",
-        [string]$ErrorMessageFields = "Error: Somes fields have invalid values.",
+        [string]$ErrorMessageFields = "Error: Some fields have invalid values.",
         [ValidateSet("Right", "Left")]
         [string]$ErrorsPropertiesAlign = "Right",
         [switch]$Execute,
         [System.Management.Automation.FunctionInfo]$FunctionToRunOnValue,
+        [object]$Object,
         [switch]$DontSpaceAfterDialog
     )
     Begin {
@@ -233,18 +240,30 @@ function Invoke-CLIDialog {
             $Dialog.SetSeparatorLocation()
             $oResult = $null
             $Dialog.DrawStatic()
+            $bPreviousTreatCtrlC = [Console]::TreatControlCAsInput
             try {
+                [Console]::TreatControlCAsInput = $true
                 [console]::CursorVisible=$false #prevents cursor flickering
+                $startPos = [System.Console]::CursorTop
                 $Dialog.DrawDynamic()
                 While ($oResult -eq $null) {
                     $Key = [Console]::ReadKey($true)
                     $oResult = $Dialog.PressKey($Key)
-                    
-                    $startPos = [System.Console]::CursorTop - $iFormHeight
+
                     [System.Console]::SetCursorPosition(0, $startPos)
                     $Dialog.DrawDynamic()
+                    $iNewFormHeight = $Dialog.GetTextHeight($true)
+                    # Clear ghost lines when height decreased
+                    if ($iNewFormHeight -lt $iFormHeight) {
+                        $iWindowWidth = (Get-Host).UI.RawUI.WindowSize.Width
+                        for ($g = 0; $g -lt ($iFormHeight - $iNewFormHeight); $g++) {
+                            Write-Host (" " * $iWindowWidth)
+                        }
+                    }
+                    $iFormHeight = $iNewFormHeight
                 }
             } finally {
+                [Console]::TreatControlCAsInput = $bPreviousTreatCtrlC
                 [System.Console]::SetCursorPosition(0, $startPos + $iFormHeight) | Out-Null
                 [System.Console]::CursorVisible = $true
             }
@@ -258,6 +277,14 @@ function Invoke-CLIDialog {
                     Type = $oResult.ButtonType
                     ValidForm = $Dialog.IsValidForm()
                 }
+                # Save textbox history on Validate with valid form
+                if ($oResult.Action -eq "Validate" -and $Dialog.IsValidForm()) {
+                    foreach ($oRow in $Dialog.Rows) {
+                        if ($oRow.Type -eq "textbox") {
+                            $oRow.SaveToHistory()
+                        }
+                    }
+                }
                 switch ($hResult.Type) {
                     { $_ -in @("Action", "Action_Scriptblock") } {
                         if ($hResult.Form.SelectedObjectsArray) {
@@ -265,7 +292,8 @@ function Invoke-CLIDialog {
                         } elseif ($oResult.Object) {
                             return New-DialogResultAction -Action $oResult.Action -DialogResult $hResult -Value $oResult.Object
                         } elseif ($Dialog.IsValidForm()) {
-                            return New-DialogResultAction -Action $oResult.Action -DialogResult $hResult -Value $hResult.Form.GetValue()
+                            $oValue = $hResult.Form.GetValue()
+                            return New-DialogResultAction -Action $oResult.Action -DialogResult $hResult -Value $oValue
                         } else {
                             return New-DialogResultAction -Action $oResult.Action -DialogResult $hResult -Value $oResult.Object
                         }
@@ -292,7 +320,7 @@ function Invoke-CLIDialog {
                 [AllowEmptyString()]
                 [string]$CustomErrorMessage,
                 [string]$ErrorMessageOneField = "Error: The following field has an invalid value.",
-                [string]$ErrorMessageFields = "Error: Somes fields have invalid values.",
+                [string]$ErrorMessageFields = "Error: Some fields have invalid values.",
                 [switch]$Details
             )
             if ($Dialog.IsValidForm()) {
@@ -349,11 +377,11 @@ function Invoke-CLIDialog {
                     if ($PauseAfterErrorMessage) {
                         Invoke-Pause -ReplaceByLine -LineColor Red -MessageColor White
                     }
-                    $oResult = Show -Dialog $Dialog
+                    $oResult = Show -Dialog $Dialog -DontSpaceAfterDialog:$DontSpaceAfterDialog
                 }
                 return $oResult
             } else {
-                return Show -Dialog $Dialog
+                return Show -Dialog $Dialog -DontSpaceAfterDialog:$DontSpaceAfterDialog
             }
         }
 
@@ -378,7 +406,7 @@ function Invoke-CLIDialog {
                         return $oDialogResult
                     }
                     "DialogResult.Scriptblock" {
-                        $icr = Invoke-Command $oDialogResult.Value -ArgumentList $oObject
+                        $icr = Invoke-Command $oDialogResult.Value -ArgumentList $Object
                         return $icr
                     }
                     "DialogResult.Action.*" {

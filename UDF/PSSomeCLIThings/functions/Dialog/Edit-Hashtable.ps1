@@ -104,12 +104,12 @@ function Edit-Hashtable {
         New-CLIDialogSpace -Length 3
         New-CLIDialogButton -Text "&Cancel" -Cancel
     ) -Prefix $Prefix -FocusedPrefix $FocusedPrefix
-    $oResult = (New-CLIDialog -Rows $hDialog).Invoke()
-    if ($oResult.Button.Cancel) {
+    $oResult = Invoke-CLIDialog -InputObject $hDialog
+    if (($oResult.Type -eq "Action") -and ($oResult.Action -eq "Cancel")) {
         return $null
     } else {
         $hResult = [ordered]@{}
-        foreach ($prop in $($oResult.Form.Rows | Where-Object { $_.Type -eq "textbox" })) {
+        foreach ($prop in $($oResult.DialogResult.Form.Rows | Where-Object { $_.Type -eq "textbox" })) {
             $hResult.$($prop.Header) = $prop.GetValue()
         }
         return $hResult

@@ -127,11 +127,8 @@
         Creates a row with invisible header space for alignment with other labeled rows.
 
     .NOTES
-        Module: CLIDialog
         Author: Loïc Ade
-        Created: 2025-10-20
-        Version: 1.0.0
-        Dependencies: None
+        Version: 1.1.0
 
         This function is part of the CLI Dialog framework. Rows are container objects that
         manage groups of interactive controls and handle navigation between them.
@@ -184,6 +181,9 @@
 
         CHANGELOG:
 
+        Version 1.1.0 - 2026-04-03 - Loïc Ade
+            - Added theme support via Get-CLIDialogTheme for default colors
+
         Version 1.0.0 - 2025-10-20 - Loïc Ade
             - Initial release
             - Horizontal and vertical layout modes
@@ -205,10 +205,10 @@
         [ValidateSet("Left", "Right")]
         [string]$HeaderAlign = "Left",
         [string]$HeaderSeparator = " : ",
-        [System.ConsoleColor]$HeaderForegroundColor = [System.ConsoleColor]::Green,
-        [System.ConsoleColor]$HeaderBackgroundColor = (Get-Host).UI.RawUI.BackgroundColor,
-        [System.ConsoleColor]$FocusedHeaderForegroundColor = [System.ConsoleColor]::Blue,
-        [System.ConsoleColor]$FocusedHeaderBackgroundColor = (Get-Host).UI.RawUI.BackgroundColor,
+        [System.ConsoleColor]$HeaderForegroundColor = (Get-CLIDialogTheme "HeaderForegroundColor"),
+        [System.ConsoleColor]$HeaderBackgroundColor = (Get-CLIDialogTheme "HeaderBackgroundColor"),
+        [System.ConsoleColor]$FocusedHeaderForegroundColor = (Get-CLIDialogTheme "FocusedHeaderForegroundColor"),
+        [System.ConsoleColor]$FocusedHeaderBackgroundColor = (Get-CLIDialogTheme "FocusedHeaderBackgroundColor"),
         [int]$SeparatorLocation,
         [string]$Prefix = "",
         [string]$FocusedPrefix = "",
@@ -217,7 +217,7 @@
         [switch]$InvisibleHeader,
         [switch]$Vertical
     )
-    $bValid = $true
+    $aUnsupportedTypes = @()
     $aItems = @()
     for ($i = 0; $i -lt $Row.Count; $i++) {
         if ($Row[$i].Type -in @("button", "checkbox", "space", "radiobutton")) {
@@ -225,11 +225,12 @@
                 $aItems += $i
             }
         } else {
-            $bValid = ($Row[$i].Type)
+            $aUnsupportedTypes += $Row[$i].Type
         }
     }
-    if (-not $bValid) {
-        throw "Row contains things that are not supported"
+    if ($aUnsupportedTypes.Count -gt 0) {
+        $sTypes = ($aUnsupportedTypes | Select-Object -Unique) -join ', '
+        throw "Row contains unsupported types: $sTypes"
     }
 
     $hKeyboardObjects = @{}

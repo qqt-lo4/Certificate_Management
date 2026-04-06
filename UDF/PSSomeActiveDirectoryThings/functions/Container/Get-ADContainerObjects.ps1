@@ -86,7 +86,10 @@
         [string]$LDAPFilter,
         
         [Parameter(Mandatory = $false)]
-        [switch]$RecursiveSearch
+        [switch]$RecursiveSearch,
+
+        [Parameter(Mandatory = $false)]
+        [System.DirectoryServices.SecurityMasks]$SecurityMasks
     )
     
     # Define parameters to pass to Get-ADObject
@@ -104,6 +107,7 @@
     if ($PSBoundParameters.ContainsKey('Filter')) { $params['Filter'] = $Filter }
     if ($PSBoundParameters.ContainsKey('LDAPFilter')) { $params['LDAPFilter'] = $LDAPFilter }
     if ($UseGlobalCatalog) { $params['UseGlobalCatalog'] = $true }
+    if ($PSBoundParameters.ContainsKey('SecurityMasks')) { $params['SecurityMasks'] = $SecurityMasks }
     
     try {
         # Call Get-ADObject with the parameters

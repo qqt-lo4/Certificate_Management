@@ -103,11 +103,8 @@ function New-CLIDialogSeparator {
         Creates a cyan separator with 2-space prefix using box-drawing character.
 
     .NOTES
-        Module: CLIDialog
         Author: Loïc Ade
-        Created: 2025-10-20
-        Version: 1.0.0
-        Dependencies: None
+        Version: 1.1.0
 
         This function is part of the CLI Dialog framework. It uses parameter sets to ensure
         either AutoLength or Length is used, but not both.
@@ -131,6 +128,9 @@ function New-CLIDialogSeparator {
 
         CHANGELOG:
 
+        Version 1.1.0 - 2026-04-03 - Loïc Ade
+            - Added support for theme
+
         Version 1.0.0 - 2025-10-20 - Loïc Ade
             - Initial release
             - Support for fixed and automatic length
@@ -148,13 +148,15 @@ function New-CLIDialogSeparator {
         [int]$Length,
         [Parameter(ParameterSetName = "Auto")]
         [switch]$AutoLength,
+        [Parameter(ParameterSetName = "FullWidth")]
+        [switch]$FullWidth,
         [switch]$DrawPageNumber,
         [switch]$DrawArrows,
         [int]$PageNumber,
         [int]$PageCount,
         [string]$LeftArrow = "<--",
         [string]$RightArrow = "-->",
-        [System.ConsoleColor]$ForegroundColor = (Get-Host).UI.RawUI.ForegroundColor,
+        [System.ConsoleColor]$ForegroundColor = (Get-CLIDialogTheme SeparatorColor),
         [switch]$PressKeyToContinue,
         [string]$PressKeyToContinueMessage = "Press any key to continue...",
         [string]$Text
@@ -178,14 +180,17 @@ function New-CLIDialogSeparator {
         PressKeyToContinueDone = $false
         PressKeyToContinueMessage = $PressKeyToContinueMessage
         Text = $Text
+        AutoLength = $false
+        FullWidth = $false
     }
-    if ($PSCmdlet.ParameterSetName -eq "Length") {
-        $hResult.Length = $Length
-        $hResult.AutoLength = $false
-    } else {
-        if ($AutoLength.IsPresent) {
-            $hResult.AutoLength = $AutoLength
-        } else {
+    switch ($PSCmdlet.ParameterSetName) {
+        "Length" {
+            $hResult.Length = $Length
+        }
+        "FullWidth" {
+            $hResult.FullWidth = $true
+        }
+        default {
             $hResult.AutoLength = $true
         }
     }
@@ -201,7 +206,9 @@ function New-CLIDialogSeparator {
         if ($this.AutoLength -and ($Length -le 0)) {
             throw [System.ArgumentOutOfRangeException] "Can't draw a separator with length equals $Length"
         }
-        $iLength = if ($this.AutoLength) {
+        $iLength = if ($this.FullWidth) {
+            (Get-Host).UI.RawUI.WindowSize.Width - $this.Prefix.Length
+        } elseif ($this.AutoLength) {
             $Length
         } else {
             $this.Length
@@ -222,12 +229,13 @@ function New-CLIDialogSeparator {
             $LineMessage += ($this.Char * $iLength)
             Write-Host $LineMessage -ForegroundColor $this.ForegroundColor
         } else {
-            $sFullLineText = $this.GetFullLineText()
+            $sFullLineText = $this.GetFullLineText($iLength)
             Write-Host $sFullLineText -ForegroundColor $this.ForegroundColor
         }
     }
 
     $hResult | Add-Member -MemberType ScriptMethod -Name "GetFullLineText" -Value {
+        Param([int]$iLength)
         if ((-not $this.DrawPageNumber) -and (-not $this.DrawArrows)) {
             if ($this.Text) {
                 $sLineContent = " " + $this.Text + " " 
@@ -265,8 +273,18 @@ function New-CLIDialogSeparator {
     }
 
     $hResult | Add-Member -MemberType ScriptMethod -Name "GetTextWidth" -Value {
-        $sFullLineText = $this.GetFullLineText()
-        return $sFullLineText.Length
+        if ($this.FullWidth) {
+            return 0
+        }
+        if ($this.AutoLength) {
+            # Return minimum width needed to display content
+            if ($this.Text) {
+                # Text + surrounding spaces + at least 1 char separator on each side
+                return (" " + $this.Text + " ").Length + 2 + $this.Prefix.Length
+            }
+            return 0
+        }
+        return $this.Length + $this.Prefix.Length
     }
 
     $hResult | Add-Member -MemberType ScriptMethod -Name "IsDynamicObject" -Value {

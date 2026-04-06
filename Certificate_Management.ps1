@@ -8,19 +8,19 @@ $i = 0
 
 #region Include
 Write-Progress -Activity "Loading script modules" -Status "PSSomeActiveDirectoryThings" -PercentComplete (($($i++; $i) / $iModulesCount) * 100)
-Import-Module $PSScriptRoot\UDF\PSSomeActiveDirectoryThings
+Import-Module $PSScriptRoot\UDF\PSSomeActiveDirectoryThings -Force
 Write-Progress -Activity "Loading script modules" -Status "PSSomeAuthThings" -PercentComplete (($($i++; $i) / $iModulesCount) * 100)
-Import-Module $PSScriptRoot\UDF\PSSomeAuthThings
+Import-Module $PSScriptRoot\UDF\PSSomeAuthThings -Force
 Write-Progress -Activity "Loading script modules" -Status "PSSomeCertificatesThings" -PercentComplete (($($i++; $i) / $iModulesCount) * 100)
-Import-Module $PSScriptRoot\UDF\PSSomeCertificatesThings -WarningAction SilentlyContinue
+Import-Module $PSScriptRoot\UDF\PSSomeCertificatesThings -Force -WarningAction SilentlyContinue
 Write-Progress -Activity "Loading script modules" -Status "PSSomeCLIThings" -PercentComplete (($($i++; $i) / $iModulesCount) * 100)
-Import-Module $PSScriptRoot\UDF\PSSomeCLIThings
+Import-Module $PSScriptRoot\UDF\PSSomeCLIThings -Force
 Write-Progress -Activity "Loading script modules" -Status "PSSomeCoreThings" -PercentComplete (($($i++; $i) / $iModulesCount) * 100)
-Import-Module $PSScriptRoot\UDF\PSSomeCoreThings
+Import-Module $PSScriptRoot\UDF\PSSomeCoreThings -Force
 Write-Progress -Activity "Loading script modules" -Status "PSSomeDataThings" -PercentComplete (($($i++; $i) / $iModulesCount) * 100)
-Import-Module $PSScriptRoot\UDF\PSSomeDataThings
+Import-Module $PSScriptRoot\UDF\PSSomeDataThings -Force
 Write-Progress -Activity "Loading script modules" -Status "PSSomeNetworkThings" -PercentComplete (($($i++; $i) / $iModulesCount) * 100)
-Import-Module $PSScriptRoot\UDF\PSSomeNetworkThings
+Import-Module $PSScriptRoot\UDF\PSSomeNetworkThings -Force
 Write-Progress -Activity "Loading script modules" -Status "Loading end" -PercentComplete 100 -Completed
 #endregion Include
 

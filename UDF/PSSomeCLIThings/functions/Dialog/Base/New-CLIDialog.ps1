@@ -128,11 +128,8 @@
         Creates a status dialog with radio buttons and F5 refresh support.
 
     .NOTES
-        Module: CLIDialog
         Author: Loïc Ade
-        Created: 2025-10-20
         Version: 1.0.0
-        Dependencies: New-DialogResultAction, New-DialogResultScriptblock, New-DialogResultValue
 
         This function is the core of the CLI Dialog framework. It orchestrates all controls,
         manages interaction flow, and provides a complete form-based user interface in the console.
@@ -464,12 +461,16 @@
             $this.FocusedRow--
             $oRow = $this.Rows[$this.ObjectsIndex[$this.FocusedRow]]
             if (($oRow.type -eq "textbox") -and ($null -ne $Options)) {
-                $oRow.SetCursorPosition($Options)
+                if ($oRow.MultiLine) {
+                    $oRow.SetCursorPositionAtLine(-1, $Options)
+                } else {
+                    $oRow.SetCursorPosition($Options)
+                }
             }
             if (($oRowBefore.type -eq "row") -and ($oRow.type -eq "row")) {
                 $oRowBeforeObjTypes = $oRowBefore.RowContent.type | Select-Object -Unique
                 $oRowObjTypes = $oRow.RowContent.type | Select-Object -Unique
-                if (($oRowBeforeObjTypes.Count -eq 1) -and ($oRowObjTypes.Count -eq 1) -and ($oRowBeforeObjTypes = "button") -and ($oRowObjTypes = "button")) {
+                if (($oRowBeforeObjTypes.Count -eq 1) -and ($oRowObjTypes.Count -eq 1) -and ($oRowBeforeObjTypes -eq "button") -and ($oRowObjTypes -eq "button")) {
                     if ($oRowBefore.FocusedItem -eq 0) {
                         if ($oRow.Vertical) {
                             $oRow.FocusedItem = $oRow.RowContent.Count - 1
@@ -486,7 +487,7 @@
 
                         $iRowButtonIndexesLength = ($oRow.RowContent | ForEach-Object { $_.GetTextWidth() } | Measure-Object -Sum).Sum
 
-                        if ($iButtonBeforeMiddle -gt $iRowButtonIndexesLength) {
+                        if ($iButtonBeforeMiddle -ge $iRowButtonIndexesLength) {
                             $oRow.FocusedItem = $oRow.RowContent.Count - 1
                         } else {
                             $aRowButtonIndexes = [int[]]::new($iRowButtonIndexesLength)
@@ -516,12 +517,16 @@
             $this.FocusedRow++
             $oRow = $this.Rows[$this.ObjectsIndex[$this.FocusedRow]]
             if (($oRow.type -eq "textbox") -and ($null -ne $Options)) {
-                $oRow.SetCursorPosition($Options)
+                if ($oRow.MultiLine) {
+                    $oRow.SetCursorPositionAtLine(0, $Options)
+                } else {
+                    $oRow.SetCursorPosition($Options)
+                }
             }
             if (($oRowBefore.type -eq "row") -and ($oRow.type -eq "row")) {
                 $oRowBeforeObjTypes = $oRowBefore.RowContent.type | Select-Object -Unique
                 $oRowObjTypes = $oRow.RowContent.type | Select-Object -Unique
-                if (($oRowBeforeObjTypes.Count -eq 1) -and ($oRowObjTypes.Count -eq 1) -and ($oRowBeforeObjTypes = "button") -and ($oRowObjTypes = "button")) {
+                if (($oRowBeforeObjTypes.Count -eq 1) -and ($oRowObjTypes.Count -eq 1) -and ($oRowBeforeObjTypes -eq "button") -and ($oRowObjTypes -eq "button")) {
                     if ($oRowBefore.FocusedItem -eq 0) {
                         $oRow.FocusedItem = 0
                     } else {
@@ -534,7 +539,7 @@
 
                         $iRowButtonIndexesLength = ($oRow.RowContent | ForEach-Object { $_.GetTextWidth() } | Measure-Object -Sum).Sum
 
-                        if ($iButtonBeforeMiddle -gt $iRowButtonIndexesLength) {
+                        if ($iButtonBeforeMiddle -ge $iRowButtonIndexesLength) {
                             $oRow.FocusedItem = $oRow.RowContent.Count - 1
                         } else {
                             $aRowButtonIndexes = [int[]]::new($iRowButtonIndexesLength)
@@ -743,7 +748,7 @@
         Param(
             [string]$PropertyAlign = "Right",
             [string]$OneFieldErrorMessage = "Error: The following field has an invalid value.",
-            [string]$SeveralFieldsErrorMessage = "Error: Somes fields have invalid values."
+            [string]$SeveralFieldsErrorMessage = "Error: Some fields have invalid values."
         )
         if ($this.IsValidForm()) {
             $this.RemoveKey("Errors")
@@ -818,38 +823,58 @@
         $iFormHeight = $this.GetTextHeight($true)
         $oResult = $null
         $this.DrawStatic()
+        $bPreviousTreatCtrlC = [Console]::TreatControlCAsInput
         try {
+			[Console]::TreatControlCAsInput = $true
 			[console]::CursorVisible=$false #prevents cursor flickering
+			$startPos = [System.Console]::CursorTop
 			$this.DrawDynamic()
             While ($oResult -eq $null) {
 				$Key = [Console]::ReadKey($true)
                 $oResult = $this.PressKey($Key)
-				
-                $startPos = [System.Console]::CursorTop - $iFormHeight
+
                 [System.Console]::SetCursorPosition(0, $startPos)
                 $this.DrawDynamic()
+                $iNewFormHeight = $this.GetTextHeight($true)
+                # Clear ghost lines when height decreased
+                if ($iNewFormHeight -lt $iFormHeight) {
+                    $iWindowWidth = (Get-Host).UI.RawUI.WindowSize.Width
+                    for ($g = 0; $g -lt ($iFormHeight - $iNewFormHeight); $g++) {
+                        Write-Host (" " * $iWindowWidth)
+                    }
+                }
+                $iFormHeight = $iNewFormHeight
 			}
 		}
 		finally {
+			[Console]::TreatControlCAsInput = $bPreviousTreatCtrlC
 			[System.Console]::SetCursorPosition(0, $startPos + $iFormHeight) | Out-Null
 			[System.Console]::CursorVisible = $true
 		}
         if ($oResult -ne $null) {
             $hResult = @{
-                Button = $oButtonResult
+                Button = $oResult
                 Form = $this
-                Type = $oButtonResult.ButtonType
+                Type = $oResult.ButtonType
                 ValidForm = $this.IsValidForm()
+            }
+            # Save textbox history on Validate with valid form
+            if ($oResult.Action -eq "Validate" -and $this.IsValidForm()) {
+                foreach ($oRow in $this.Rows) {
+                    if ($oRow.Type -eq "textbox") {
+                        $oRow.SaveToHistory()
+                    }
+                }
             }
             switch ($hResult.Type) {
                 { $_ -in @("Action", "Action_Scriptblock") } {
-                    return New-DialogResultAction -Action $oButtonResult.Action -DialogResult $hResult -Value $oButtonResult.Object 
+                    return New-DialogResultAction -Action $oResult.Action -DialogResult $hResult -Value $oResult.Object
                 }
                 "Scriptblock" {
-                    return New-DialogResultScriptblock -Action $oButtonResult.Action -DialogResult $hResult -Value $oButtonResult.Object
+                    return New-DialogResultScriptblock -Action $oResult.Action -DialogResult $hResult -Value $oResult.Object
                 }
                 "Value" {
-                    return New-DialogResultValue -Action $oButtonResult.Action -DialogResult $hResult -Value $oButtonResult.Object -SelectedProperties $oButtonResult.ObjectSelectedProperties
+                    return New-DialogResultValue -Action $oResult.Action -DialogResult $hResult -Value $oResult.Object -SelectedProperties $oResult.ObjectSelectedProperties
                 }
             }
             return $hResult

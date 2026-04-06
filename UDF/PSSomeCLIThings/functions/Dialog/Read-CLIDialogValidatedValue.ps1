@@ -308,9 +308,9 @@ function Read-CLIDialogValidatedValue {
     }
     if ($ValidationMethod -is [string]) {
         $hTextboxParameters.Regex = if ($DefaultValue) {
-            "$Regex|^$"
+            "$ValidationMethod|^$"
         } else {
-            $Regex
+            $ValidationMethod
         }
     } elseif ($ValidationMethod -is [scriptblock]) {
         $hTextboxParameters.ValidationScript = $ValidationMethod

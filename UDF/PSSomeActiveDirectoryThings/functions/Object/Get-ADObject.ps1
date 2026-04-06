@@ -75,6 +75,13 @@
     .PARAMETER Contact
         Filter to contact objects.
 
+    .PARAMETER SecurityMasks
+        Controls which security descriptor parts are returned when requesting nTSecurityDescriptor.
+        By default, the DirectorySearcher does not return security descriptors. Set this to
+        [System.DirectoryServices.SecurityMasks]::Dacl to retrieve the permissions (ACL), which
+        is required for reading who can Enroll/AutoEnroll on certificate templates, for example.
+        Possible values: None, Owner, Group, Dacl, Sacl.
+
     .OUTPUTS
         Custom AD object(s) with typed PSTypeNames and Refresh() method.
 
@@ -185,7 +192,10 @@
         [Parameter(ParameterSetName = "LdapFilter")]
         [Parameter(ParameterSetName = "Filter")]
         [Parameter(ParameterSetName = "Identity")]
-        [switch]$Contact
+        [switch]$Contact,
+
+        [Parameter()]
+        [System.DirectoryServices.SecurityMasks]$SecurityMasks
     )
     Begin {
         function Get-LdapFilter {
@@ -258,7 +268,9 @@
             if ($bDN) {
                 $sPath += $Identity
             } else {
-                [System.DirectoryServices.DirectoryEntry] $de = New-Object System.DirectoryServices.DirectoryEntry($sLdapProtocol + "RootDSE")
+                # Read RootDSE from the target server (or local domain if no server specified)
+                $sRootDSEPath = if ($Server) { $sLdapProtocol + $Server + "/RootDSE" } else { $sLdapProtocol + "RootDSE" }
+                [System.DirectoryServices.DirectoryEntry] $de = New-Object System.DirectoryServices.DirectoryEntry($sRootDSEPath)
                 $sPath += if ($sLdapProtocol -eq "LDAP://") {
                     $de.Properties["defaultNamingContext"][0].ToString();
                 } else {
@@ -279,6 +291,7 @@
                 $ds.SearchRoot = $sLdapProtocol + $SearchBase
             }
         }
+        if ($PSBoundParameters.ContainsKey('SecurityMasks')) { $ds.SecurityMasks = $SecurityMasks }
         if ($Properties) {
             $ds.PropertiesToLoad.Add("objectclass") | Out-Null
             foreach ($sProperty in $Properties) {

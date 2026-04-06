@@ -51,10 +51,7 @@ function Select-CLIDialogCSVFile {
     .NOTES
         Module: CLIDialog
         Author: Loïc Ade
-        Created: 2021-12-13
-        Modified: 2025-11-23
-        Version: 2.0.0
-        Dependencies: Select-CLIFileFromFolder, Invoke-YesNoCLIDialog, New-DialogResultAction
+        Version: 2.1.0
 
         This function provides an interactive way to select and validate CSV files from a folder.
         It ensures the selected CSV has the required column structure before returning the data.
@@ -90,6 +87,10 @@ function Select-CLIDialogCSVFile {
 
         CHANGELOG:
 
+        Version 2.1.0 - 2026-04-04 - Loïc Ade
+            - Added theme support via Get-CLIDialogTheme for default colors
+            - New parameters: ErrorColor, HintColor
+
         Version 2.0.0 - 2025-11-23 - Loïc Ade
             - Complete rewrite using CLI Dialog framework
             - Replaced Get-ItemSelectedByUser with Select-CLIFileFromFolder
@@ -115,7 +116,9 @@ function Select-CLIDialogCSVFile {
         [string]$SelectHeaderMessage = "Please select a CSV file (must not contain headers and must be separated by commas):",
         [string]$InvalidCSVMessage = "Selected CSV file does not contain the correct number of columns.",
         [string]$PreviewMessage = "Preview of the CSV (%1 lines):",
-        [int]$PreviewLines = 3
+        [int]$PreviewLines = 3,
+        [System.ConsoleColor]$ErrorColor = (Get-CLIDialogTheme "ErrorColor"),
+        [System.ConsoleColor]$HintColor = (Get-CLIDialogTheme "HintColor")
     )
 
     # Validate folder exists
@@ -159,13 +162,13 @@ function Select-CLIDialogCSVFile {
         }
 
         if (-not $hasCorrectHeaders) {
-            Write-Host $InvalidCSVMessage -ForegroundColor Red
+            Write-Host $InvalidCSVMessage -ForegroundColor $ErrorColor
             continue
         }
 
         # Display preview
         $previewLineCount = [Math]::Min($csv.Count, $PreviewLines)
-        Write-Host ($PreviewMessage -replace "%1", $previewLineCount) -ForegroundColor Cyan
+        Write-Host ($PreviewMessage -replace "%1", $previewLineCount) -ForegroundColor $HintColor
         Write-Host ($csv[0..($previewLineCount - 1)] | Format-Table | Out-String)
 
         # Confirmation dialog

@@ -94,11 +94,8 @@ function New-CLIDialogRadioButton {
         Creates a radio button with manual underline and keyboard shortcut.
 
     .NOTES
-        Module: CLIDialog
         Author: Loïc Ade
-        Created: 2025-10-20
-        Version: 1.0.0
-        Dependencies: Set-StringUnderline
+        Version: 1.1.0
 
         This function is part of the CLI Dialog framework. Radio buttons are typically grouped
         in rows using New-CLIDialogObjectsRow, which automatically handles mutual exclusion.
@@ -129,6 +126,9 @@ function New-CLIDialogRadioButton {
 
         CHANGELOG:
 
+        Version 1.1.0 - 2026-04-03 - Loïc Ade
+            - Added theme support via Get-CLIDialogTheme for default colors
+
         Version 1.0.0 - 2025-10-20 - Loïc Ade
             - Initial release
             - Single-selection radio button functionality
@@ -145,10 +145,10 @@ function New-CLIDialogRadioButton {
         [Parameter(Position = 1)]
         [bool]$Enabled,
         [System.ConsoleKey]$Keyboard,
-        [System.ConsoleColor]$BackgroundColor = (Get-Host).UI.RawUI.BackgroundColor,
-        [System.ConsoleColor]$ForegroundColor = (Get-Host).UI.RawUI.ForegroundColor,
-        [System.ConsoleColor]$FocusedBackgroundColor = (Get-Host).UI.RawUI.ForegroundColor,
-        [System.ConsoleColor]$FocusedForegroundColor = (Get-Host).UI.RawUI.BackgroundColor,
+        [System.ConsoleColor]$BackgroundColor = (Get-CLIDialogTheme "BackgroundColor"),
+        [System.ConsoleColor]$ForegroundColor = (Get-CLIDialogTheme "ForegroundColor"),
+        [System.ConsoleColor]$FocusedBackgroundColor = (Get-CLIDialogTheme "FocusedBackgroundColor"),
+        [System.ConsoleColor]$FocusedForegroundColor = (Get-CLIDialogTheme "FocusedForegroundColor"),
         [string]$Name,
         [int]$Underline = -1,
         [object]$Object

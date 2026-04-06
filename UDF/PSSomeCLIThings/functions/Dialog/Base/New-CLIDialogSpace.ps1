@@ -49,11 +49,8 @@ function New-CLIDialogSpace {
         Creates a space and gets its width for layout calculations.
 
     .NOTES
-        Module: CLIDialog
         Author: Loïc Ade
-        Created: 2025-10-20
-        Version: 1.0.0
-        Dependencies: None
+        Version: 1.1.0
 
         This function is part of the CLI Dialog framework and is typically used with
         New-CLIDialogObjectsRow to create horizontal layouts with proper spacing.
@@ -66,6 +63,9 @@ function New-CLIDialogSpace {
 
         CHANGELOG:
 
+        Version 1.1.0 - 2026-04-03 - Loïc Ade
+            - Added support for theme
+
         Version 1.0.0 - 2025-10-20 - Loïc Ade
             - Initial release
             - Configurable length with validation
@@ -76,7 +76,7 @@ function New-CLIDialogSpace {
         [Parameter(Position = 0)]
         [ValidateRange(1, [int]::MaxValue)]
         [int]$Length = 1,
-        [System.ConsoleColor]$Color = (Get-Host).UI.RawUI.BackgroundColor
+        [System.ConsoleColor]$Color = (Get-CLIDialogTheme "BackgroundColor")
     )
     $hResult = @{
         Type = "space"

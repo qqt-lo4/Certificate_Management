@@ -122,11 +122,8 @@ function New-CLIDialogProperty {
         Creates an indented property with yellow header.
 
     .NOTES
-        Module: CLIDialog
         Author: Loïc Ade
-        Created: 2025-10-20
-        Version: 1.0.0
-        Dependencies: Write-ColoredString
+        Version: 1.1.0
 
         This function is part of the CLI Dialog framework. Properties are read-only display
         elements used for showing information to users without allowing interaction.
@@ -155,6 +152,9 @@ function New-CLIDialogProperty {
 
         CHANGELOG:
 
+        Version 1.1.0 - 2026-04-05 - Loïc Ade
+            - Added theme support via Get-CLIDialogTheme for default colors
+
         Version 1.0.0 - 2025-10-20 - Loïc Ade
             - Initial release
             - Read-only property display
@@ -171,19 +171,23 @@ function New-CLIDialogProperty {
         [ValidateSet("Left", "Right")]
         [string]$HeaderAlign = "Left",
         [string]$HeaderSeparator = " : ",
-        [System.ConsoleColor]$TextForegroundColor = (Get-Host).UI.RawUI.ForegroundColor,
-        [System.ConsoleColor]$TextBackgroundColor = (Get-Host).UI.RawUI.BackgroundColor,
-        [System.ConsoleColor]$MatchTextForegroundColor = [System.ConsoleColor]::Blue,
-        [System.ConsoleColor]$MatchTextBackgroundColor = (Get-Host).UI.RawUI.BackgroundColor,
-        [System.ConsoleColor]$HeaderForegroundColor = [System.ConsoleColor]::Green,
-        [System.ConsoleColor]$HeaderBackgroundColor = (Get-Host).UI.RawUI.BackgroundColor,
+        [System.ConsoleColor]$TextForegroundColor = (Get-CLIDialogTheme "ForegroundColor"),
+        [System.ConsoleColor]$TextBackgroundColor = (Get-CLIDialogTheme "BackgroundColor"),
+        [System.ConsoleColor]$MatchTextForegroundColor = (Get-CLIDialogTheme "MatchTextForegroundColor"),
+        [System.ConsoleColor]$MatchTextBackgroundColor = (Get-CLIDialogTheme "MatchTextBackgroundColor"),
+        [System.ConsoleColor]$HeaderForegroundColor = (Get-CLIDialogTheme "HeaderForegroundColor"),
+        [System.ConsoleColor]$HeaderBackgroundColor = (Get-CLIDialogTheme "HeaderBackgroundColor"),
         [string]$Pattern,
         [string[]]$ColorGroups = @("0"),
         [switch]$AllMatches,
         [int]$SeparatorLocation,
         [string[]]$Text = "",
         [string]$Prefix = "",
-        [string]$Name
+        [string]$Name,
+        [ValidateSet("None", "Truncate", "WordWrap")]
+        [string]$OverflowMode = "WordWrap",
+        [ValidateSet("Separator", "Start")]
+        [string]$WrapIndent = "Separator"
     )
     $hResult = @{
         Type = "property"
@@ -203,55 +207,114 @@ function New-CLIDialogProperty {
         HeaderForegroundColor = $HeaderForegroundColor
         HeaderBackgroundColor = $HeaderBackgroundColor
         Name = if ($Name) { $Name } else { "row" + $Header.Replace("$([char]27)[4m", "").Replace("$([char]27)[24m", "").Replace(" ", "") }
+        OverflowMode = $OverflowMode
+        WrapIndent = $WrapIndent
     }
 
     $hResult | Add-Member -MemberType ScriptMethod -Name "Draw" -Value {
-        if (($this.Text -eq $null) -or ($this.Text -eq "")) {
+        if ($null -eq $this.Text -or $this.Text -eq "") {
             Write-Host ""
+            return
+        }
+
+        # Write header
+        $iHeaderWidth = 0
+        if ($this.Prefix) {
+            Write-Host $this.Prefix -NoNewline -ForegroundColor $this.HeaderForegroundColor -BackgroundColor $this.HeaderBackgroundColor
+            $iHeaderWidth += $this.Prefix.Length
+        }
+        if ($this.Header) {
+            $iAlign = if ($this.HeaderAlign -eq "Left") { -1 } else { 1 }
+            $sHeaderPart = ("{0,$($this.SeparatorLocation * $iAlign)}" -f $this.Header) + $this.HeaderSeparator
+            Write-Host $sHeaderPart -NoNewline -ForegroundColor $this.HeaderForegroundColor -BackgroundColor $this.HeaderBackgroundColor
+            $iHeaderWidth += $sHeaderPart.Length
+        }
+
+        # Prepare write function (pattern highlighting or plain Write-Host)
+        $fWH, $hWHArgs = if ($this.Pattern) {
+            Get-ChildItem Function:\Write-ColoredString
+            @{
+                Pattern = $this.Pattern
+                ForegroundColor = $this.TextForegroundColor
+                BackgroundColor = $this.TextBackgroundColor
+                MatchForegroundColor = $this.MatchTextForegroundColor
+                MatchBackgroundColor = $this.MatchTextBackgroundColor
+                ColorGroups = $this.ColorGroups
+            }
         } else {
-            # write header
-            if ($this.Prefix) {
-                Write-Host $this.Prefix -NoNewline -ForegroundColor $this.HeaderForegroundColor -BackgroundColor $this.HeaderBackgroundColor
+            Get-Command "Write-host"
+            @{
+                ForegroundColor = $this.TextForegroundColor
+                BackgroundColor = $this.TextBackgroundColor
             }
-            if ($this.Header) {
-                $iAlign = if ($this.HeaderAlign -eq "Left") { -1 } else { 1 }
-                Write-Host (("{0,$($this.SeparatorLocation * $iAlign)}" -f $this.Header) + $this.HeaderSeparator) -NoNewline -ForegroundColor $this.HeaderForegroundColor -BackgroundColor $this.HeaderBackgroundColor
+        }
+
+        if (-not $this.Text) {
+            Write-Host ""
+            return
+        }
+
+        $iWindowWidth = $host.ui.RawUI.WindowSize.Width
+        # Indentation des lignes suivantes : alignée sous la valeur ou au début de la ligne
+        $sIndent = if ($this.WrapIndent -eq 'Separator') { " " * $iHeaderWidth } else { "" }
+        $iIndentWidth = $sIndent.Length
+
+        # Helper: découper une ligne selon l'OverflowMode
+        $fnSplitLine = {
+            Param([string]$Line, [int]$AvailWidth, [string]$Mode)
+            if ($Mode -eq 'None' -or $Line.Length -le $AvailWidth -or $AvailWidth -le 2) {
+                return ,@($Line)
             }
-            # write content
-            $fWH, $hWHArgs = if ($this.Pattern) {
-                Get-ChildItem Function:\Write-ColoredString
-                @{
-                    Pattern = $this.Pattern
-                    ForegroundColor = $this.TextForegroundColor
-                    BackgroundColor = $this.TextBackgroundColor
-                    MatchForegroundColor = $this.MatchTextForegroundColor
-                    MatchBackgroundColor = $this.MatchTextBackgroundColor
-                    ColorGroups = $this.ColorGroups
-                }
-            } else {
-                Get-Command "Write-host"
-                @{
-                    ForegroundColor = $this.TextForegroundColor
-                    BackgroundColor = $this.TextBackgroundColor
-                }
+            if ($Mode -eq 'Truncate') {
+                return ,@($Line.Substring(0, $AvailWidth - 1) + [char]0x2026)
             }
-            if ($this.Text) {
-                if ($this.Text[0]) {
-                    $sText = $this.Text[0]
-                    . $fWH @hWHArgs -Object $sText
+            # WordWrap : couper de préférence aux espaces
+            $aWrapped = @()
+            $sRemaining = $Line
+            while ($sRemaining.Length -gt $AvailWidth) {
+                $iCut = $sRemaining.LastIndexOf(' ', $AvailWidth - 1)
+                if ($iCut -le 0) { $iCut = $AvailWidth - 1 }
+                $aWrapped += $sRemaining.Substring(0, $iCut)
+                $sRemaining = $sRemaining.Substring($iCut).TrimStart()
+            }
+            if ($sRemaining.Length -gt 0) { $aWrapped += $sRemaining }
+            return ,$aWrapped
+        }
+
+        for ($iLine = 0; $iLine -lt $this.Text.Count; $iLine++) {
+            $sLine = $this.Text[$iLine]
+            # Première ligne : largeur dispo = fenêtre - header
+            # Lignes suivantes : largeur dispo = fenêtre - indentation
+            $iAvail = if ($iLine -eq 0) { $iWindowWidth - $iHeaderWidth } else { $iWindowWidth - $iIndentWidth }
+            $aSubLines = & $fnSplitLine $sLine $iAvail $this.OverflowMode
+
+            for ($iSub = 0; $iSub -lt $aSubLines.Count; $iSub++) {
+                if ($iLine -gt 0 -or $iSub -gt 0) {
+                    if ($sIndent.Length -gt 0) {
+                        Write-Host $sIndent -NoNewline
+                    }
                 }
-                $sMultiLineSpace = " " * ($this.SeparatorLocation + $this.HeaderSeparator.Length)
-                for ($i = 1; $i -lt $this.Text.Count; $i++) {
-                    . $fWH @hWHArgs -Object $($sMultiLineSpace + $this.Text[$i])
-                }
-            } else {
-                Write-Host ""
+                . $fWH @hWHArgs -Object $aSubLines[$iSub]
             }
         }
     }
 
     $hResult | Add-Member -MemberType ScriptMethod -Name "GetTextHeight" -Value {
-        return $this.Text.Count
+        if ($null -eq $this.Text -or $this.Text -eq '') { return 1 }
+        if ($this.OverflowMode -ne 'WordWrap') { return $this.Text.Count }
+        $iWindowWidth = $host.ui.RawUI.WindowSize.Width
+        $iHeaderWidth = $this.Prefix.Length + $this.SeparatorLocation + $this.HeaderSeparator.Length
+        $iIndentWidth = if ($this.WrapIndent -eq 'Separator') { $iHeaderWidth } else { 0 }
+        $iTotal = 0
+        for ($i = 0; $i -lt $this.Text.Count; $i++) {
+            $iAvail = if ($i -eq 0) { $iWindowWidth - $iHeaderWidth } else { $iWindowWidth - $iIndentWidth }
+            if ($iAvail -gt 0 -and $this.Text[$i].Length -gt $iAvail) {
+                $iTotal += [Math]::Ceiling($this.Text[$i].Length / $iAvail)
+            } else {
+                $iTotal++
+            }
+        }
+        return $iTotal
     }
 
     $hResult | Add-Member -MemberType ScriptMethod -Name "GetTextWidth" -Value {

@@ -127,7 +127,7 @@
         Module: CLIDialog
         Author: Loïc Ade
         Created: 2025-04-19
-        Version: 1.1.0
+        Version: 1.2.0
         Dependencies: New-CLIDialogSeparator, New-CLIDialogTextBox, New-CLIDialogButton,
                      New-CLIDialogObjectsRow, Invoke-CLIDialog
 
@@ -254,6 +254,9 @@
             - Clean hashtable output with GetValue($true)
             - Integration with CLI Dialog framework
 
+        Version 1.2.0 - 2026-04-04 - Loïc Ade
+            - Added theme support via Get-CLIDialogTheme for default colors
+
         Version 1.1.0 - 2026-03-14 - Loïc Ade
             - Added AllowBack parameter to display a Back button
     #>
@@ -261,8 +264,8 @@
     Param(
         [Parameter(Mandatory)]
         [System.Collections.IDictionary]$Properties,
-        [System.ConsoleColor]$SeparatorColor = [System.ConsoleColor]::Blue,
-        [System.ConsoleColor]$PropertiesHeaderColor = [System.ConsoleColor]::Green,
+        [System.ConsoleColor]$SeparatorColor = (Get-CLIDialogTheme "SeparatorColor"),
+        [System.ConsoleColor]$PropertiesHeaderColor = (Get-CLIDialogTheme "HeaderForegroundColor"),
         [string]$Header = "Please enter all required values",
         [ValidateSet("Left", "Right")]
         [string]$PropertyAlign = "Left",
