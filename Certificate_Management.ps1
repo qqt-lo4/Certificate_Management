@@ -281,13 +281,23 @@ function Read-SAN {
     )
     Begin {
         function Read-SANIPandDNS {
+            Param([string]$DefaultValue, [switch]$AllowBack)
             $hProperties = [ordered]@{
                 IP = @{Regex = Get-IPRegex -FullLine; IgnoreOtherRegex = $true}
                 DNS = @{Regex = Get-DNSRegex -FullLine -AllowWildcard}
             }
-            $sReadArrayHeader = "Please specify DNS and IP subject alternative names.`nPlease enter a list of items, a new line per item. Finish the list by entering an empty item:"
-            $hResult = Read-Array -Header $sReadArrayHeader -GroupByProperties $hProperties
-            return $hResult
+            $hParams = @{
+                Header = "Subject Alternative Names"
+                TextBoxHeader = "DNS / IP"
+                HintMessage = "Enter DNS names and IP addresses, one per line.`nUse Tab or Down arrow on the last line to navigate to the buttons."
+                VisibleLines = 4
+                GroupByProperties = $hProperties
+                AllowBack = $AllowBack
+            }
+            if ($DefaultValue) {
+                $hParams.DefaultValue = $DefaultValue
+            }
+            return Read-CLIDialogArray @hParams
         }
     }
     Process {
@@ -303,7 +313,14 @@ function Read-SAN {
 
         while (-not $bResultOK) {
             if (-not $bSkipInput) {
-                $hSANs = Read-SANIPandDNS
+                $sDefaultValue = if ($hResult.SANdns -or $hResult.SANipaddress) {
+                    ((@($hResult.SANdns) + @($hResult.SANipaddress)) | Where-Object { $_ }) -join "`n"
+                } else { $null }
+                $hSANs = Read-SANIPandDNS -DefaultValue $sDefaultValue -AllowBack:$AllowBack
+                # Handle Back
+                if ($hSANs.PSTypeNames -and $hSANs.PSTypeNames[0] -like "DialogResult.Action.*") {
+                    return $hSANs
+                }
                 if (-not ($CommonName -in $hSANs.DNS)) {
                     $sAnswer = Invoke-YesNoCLIDialog -Message "The Common Name of the certificate ($CommonName) should be in subject alternative names" `
                                                      -Vertical -YN -YesButtonText "Include in DNS SAN" `
@@ -501,20 +518,6 @@ function Select-CertFolder {
     $oFolder = Select-CLIFileFromFolder -Path $sWorkingDir -Filter "*" -ColumnName "Name" -SeparatorColor Blue -SelectHeaderMessage $Message
     return $oFolder.Value.FullName
 }
-
-# function Get-PKICSRFolder {
-#     Param(
-#         [parameter(Mandatory, Position = 0)]
-#         [string]$PKIServer
-#     )
-#     $sDefaultFolder = $ScriptConfig.PKICSRFolder.default
-#     $sPKICSRFolder = $ScriptConfig.PKICSRFolder[$PKIServer]
-#     if ($sPKICSRFolder) {
-#         return $sPKICSRFolder
-#     } else {
-#         return $sDefaultFolder
-#     }
-# }
 
 function Send-CSRToCA_CLI {
     Param(

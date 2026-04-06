@@ -841,10 +841,10 @@
         Param(
             [bool]$DontSpaceAfterDialog = $false
         )
-        $iFormHeight = $this.GetTextHeight($true)
         $this.SetSeparatorLocation()
         $oResult = $null
         $this.DrawStatic()
+        $iFormHeight = $this.GetTextHeight($true)
         $bPreviousTreatCtrlC = [Console]::TreatControlCAsInput
         try {
             [Console]::TreatControlCAsInput = $true
@@ -854,18 +854,9 @@
                 $Key = [Console]::ReadKey($true)
                 $oResult = $this.PressKey($Key)
 
-                $iOldFormHeight = $iFormHeight
-                $iFormHeight = $this.GetTextHeight($true)
-                $startPos = [System.Console]::CursorTop - $iOldFormHeight
+                $startPos = [System.Console]::CursorTop - $iFormHeight
                 [System.Console]::SetCursorPosition(0, $startPos)
                 $this.DrawDynamic()
-                # Clear ghost lines when height decreased
-                if ($iFormHeight -lt $iOldFormHeight) {
-                    $iWindowWidth = (Get-Host).UI.RawUI.WindowSize.Width
-                    for ($g = 0; $g -lt ($iOldFormHeight - $iFormHeight); $g++) {
-                        Write-Host (" " * $iWindowWidth)
-                    }
-                }
             }
         }
         finally {

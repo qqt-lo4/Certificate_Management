@@ -246,13 +246,13 @@
             - Values saved on dialog validation, password fields excluded
             Multi-line mode:
             - Added multi-line text input mode (-MultiLine switch)
-            - Dynamic height: grows with content (MinVisibleLines to MaxVisibleLines)
+            - Fixed height via VisibleLines parameter
             - Enter key inserts new lines, Up/Down navigate between lines
             - Navigation to/from other controls at first/last line boundaries
             - Home/End navigate within current line, Ctrl+Home/End for entire text
             - Ctrl+V preserves newlines in multi-line mode
-            - Vertical scrolling with viewport when lines exceed MaxVisibleLines
-            New parameters: MultiLine, MinVisibleLines, MaxVisibleLines,
+            - Vertical scrolling with viewport when lines exceed VisibleLines
+            New parameters: MultiLine, VisibleLines,
               MultiLineOverflowMode, SelectionForegroundColor,
               SelectionBackgroundColor, SelectionCursorBackgroundColor
             New properties: SelectionAnchor, HistoryIndex, HistoryCurrentText,
@@ -309,8 +309,7 @@
         [string]$Name,
         [object]$ValueConvertFunction,
         [switch]$MultiLine,
-        [int]$MinVisibleLines = 1,
-        [int]$MaxVisibleLines = 5,
+        [int]$VisibleLines = 5,
         [ValidateSet("Truncate", "WordWrap")]
         [string]$MultiLineOverflowMode = "Truncate"
     )
@@ -365,8 +364,7 @@
         HistoryIndex = -1
         HistoryCurrentText = $null
         MultiLine = [bool]$MultiLine
-        MinVisibleLines = if ($MultiLine) { [Math]::Max($MinVisibleLines, 2) } else { 1 }
-        MaxVisibleLines = if ($MultiLine) { $MaxVisibleLines } else { 1 }
+        VisibleLines = if ($MultiLine) { $VisibleLines } else { 1 }
         MultiLineOverflowMode = $MultiLineOverflowMode
         ViewportTopLine = 0
     }
@@ -399,15 +397,22 @@
     }
 
     $hResult | Add-Member -MemberType ScriptMethod -Name "GetCurrentVisibleLineCount" -Value {
-        if (-not $this.MultiLine) { return 1 }
-        $iLineCount = $this.GetLines().Count
-        return [Math]::Max($this.MinVisibleLines, [Math]::Min($iLineCount, $this.MaxVisibleLines))
+        return $this.VisibleLines
     }
 
     $hResult | Add-Member -MemberType ScriptMethod -Name "EnsureCursorVisible" -Value {
         if (-not $this.MultiLine) { return }
-        $iCursorLine = $this.GetCursorLineColumn().Line
+        $iLineCount = $this.GetLines().Count
         $iVisibleLines = $this.GetCurrentVisibleLineCount()
+        # Avoid empty lines at the bottom of the viewport
+        if ($this.ViewportTopLine + $iVisibleLines -gt $iLineCount -and $iLineCount -ge $iVisibleLines) {
+            $this.ViewportTopLine = $iLineCount - $iVisibleLines
+        }
+        if ($this.ViewportTopLine -gt 0 -and $iLineCount -lt $iVisibleLines) {
+            $this.ViewportTopLine = 0
+        }
+        # Ensure cursor is within viewport
+        $iCursorLine = $this.GetCursorLineColumn().Line
         if ($iCursorLine -lt $this.ViewportTopLine) {
             $this.ViewportTopLine = $iCursorLine
         } elseif ($iCursorLine -ge ($this.ViewportTopLine + $iVisibleLines)) {
@@ -494,10 +499,11 @@
         if ($sPrintedLine.Length -gt $AvailableWidth -and $AvailableWidth -gt 2) {
             $sVisible = $sPrintedLine.Substring(0, $AvailableWidth - 1)
             Write-Host $sVisible -ForegroundColor $this.TextForegroundColor -BackgroundColor $this.TextBackgroundColor -NoNewline
-            Write-Host $this.OverflowIndicatorRight -ForegroundColor $this.OverflowIndicatorColor -BackgroundColor $this.TextBackgroundColor
+            Write-Host $this.OverflowIndicatorRight -ForegroundColor $this.OverflowIndicatorColor -BackgroundColor $this.TextBackgroundColor -NoNewline
+            Write-Host ""
         } else {
             Write-Host $sPrintedLine -ForegroundColor $this.TextForegroundColor -BackgroundColor $this.TextBackgroundColor -NoNewline
-            $iRemaining = [Math]::Max(0, $AvailableWidth - $sPrintedLine.Length)
+            $iRemaining = [Math]::Max(1, $AvailableWidth - $sPrintedLine.Length) - 1
             Write-Host (" " * $iRemaining)
         }
     }
@@ -593,11 +599,12 @@
                 }
             }
             if ($bCursorAtEnd) {
-                $iRemaining = [Math]::Max(0, $iAvailableWidth - $sFullText.Length - 1)
+                $iRemaining = [Math]::Max(0, $iAvailableWidth - $sFullText.Length - 1) - 1
             } else {
-                $iRemaining = [Math]::Max(0, $iAvailableWidth - $sFullText.Length)
+                $iRemaining = [Math]::Max(0, $iAvailableWidth - $sFullText.Length) - 1
             }
-            Write-Host (" " * $iRemaining)
+            if ($iRemaining -gt 0) { Write-Host (" " * $iRemaining) -NoNewline }
+            Write-Host ""
         } else {
             # === Text overflows: sliding window ===
             $iLocalCursor = if ($bShowCursor) { $iCursorPos } else { 0 }
@@ -710,7 +717,7 @@
                     $this.DrawFocusedLineContent($sLine, $iAvailableWidth, $iLineCursorPos, $bCursorOnThisLine, $iLineSelStart, $iLineSelEnd, $bLineSel)
                 } else {
                     # Empty padding line
-                    Write-Host (" " * $iAvailableWidth)
+                    Write-Host (" " * [Math]::Max(0, $iAvailableWidth - 1))
                 }
                 if ($iLineIndex -lt $aLines.Count) {
                     $iFlatPos += $aLines[$iLineIndex].Length + 1
