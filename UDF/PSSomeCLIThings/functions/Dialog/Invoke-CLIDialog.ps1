@@ -236,133 +236,9 @@ function Invoke-CLIDialog {
                 [object]$Dialog,
                 [switch]$DontSpaceAfterDialog
             )
-            $iFormHeight = $Dialog.GetTextHeight($true)
-            $Dialog.SetSeparatorLocation()
-            $oResult = $null
-            $Dialog.DrawStatic()
-            $bPreviousTreatCtrlC = [Console]::TreatControlCAsInput
-            try {
-                [Console]::TreatControlCAsInput = $true
-                [console]::CursorVisible=$false #prevents cursor flickering
-                $startPos = [System.Console]::CursorTop
-                $Dialog.DrawDynamic()
-                While ($oResult -eq $null) {
-                    $Key = [Console]::ReadKey($true)
-                    $oResult = $Dialog.PressKey($Key)
-
-                    [System.Console]::SetCursorPosition(0, $startPos)
-                    $Dialog.DrawDynamic()
-                    $iNewFormHeight = $Dialog.GetTextHeight($true)
-                    # Clear ghost lines when height decreased
-                    if ($iNewFormHeight -lt $iFormHeight) {
-                        $iWindowWidth = (Get-Host).UI.RawUI.WindowSize.Width
-                        for ($g = 0; $g -lt ($iFormHeight - $iNewFormHeight); $g++) {
-                            Write-Host (" " * $iWindowWidth)
-                        }
-                    }
-                    $iFormHeight = $iNewFormHeight
-                }
-            } finally {
-                [Console]::TreatControlCAsInput = $bPreviousTreatCtrlC
-                [System.Console]::SetCursorPosition(0, $startPos + $iFormHeight) | Out-Null
-                [System.Console]::CursorVisible = $true
-            }
-            if (-not $DontSpaceAfterDialog) {
-                Write-Host ""
-            }
-            if ($oResult -ne $null) {
-                $hResult = @{
-                    Button = $oResult
-                    Form = $Dialog
-                    Type = $oResult.ButtonType
-                    ValidForm = $Dialog.IsValidForm()
-                }
-                # Save textbox history on Validate with valid form
-                if ($oResult.Action -eq "Validate" -and $Dialog.IsValidForm()) {
-                    foreach ($oRow in $Dialog.Rows) {
-                        if ($oRow.Type -eq "textbox") {
-                            $oRow.SaveToHistory()
-                        }
-                    }
-                }
-                switch ($hResult.Type) {
-                    { $_ -in @("Action", "Action_Scriptblock") } {
-                        if ($hResult.Form.SelectedObjectsArray) {
-                            return New-DialogResultAction -Action $oResult.Action -DialogResult $hResult -Value $hResult.Form.SelectedObjectsArray
-                        } elseif ($oResult.Object) {
-                            return New-DialogResultAction -Action $oResult.Action -DialogResult $hResult -Value $oResult.Object
-                        } elseif ($Dialog.IsValidForm()) {
-                            $oValue = $hResult.Form.GetValue()
-                            return New-DialogResultAction -Action $oResult.Action -DialogResult $hResult -Value $oValue
-                        } else {
-                            return New-DialogResultAction -Action $oResult.Action -DialogResult $hResult -Value $oResult.Object
-                        }
-                    }
-                    "Scriptblock" {
-                        return New-DialogResultScriptblock -DialogResult $hResult -Value $oResult.Object
-                    }
-                    "Value" {
-                        if ($oResult.Object) {
-                            return New-DialogResultValue -DialogResult $hResult -Value $oResult.Object -SelectedProperties $oResult.ObjectSelectedProperties
-                        } else {
-                            return New-DialogResultValue -DialogResult $hResult -Value $hResult.Button -SelectedProperties $oResult.ObjectSelectedProperties
-                        }
-                    }
-                }
-            }
+            return $Dialog._Show([bool]$DontSpaceAfterDialog)
         }
 
-        function Write-ErrorMessage {
-            Param(
-                [Parameter(Mandatory, ValueFromPipeline)]
-                [object]$Dialog,
-                [string]$PropertyAlign = "Right",
-                [AllowEmptyString()]
-                [string]$CustomErrorMessage,
-                [string]$ErrorMessageOneField = "Error: The following field has an invalid value.",
-                [string]$ErrorMessageFields = "Error: Some fields have invalid values.",
-                [switch]$Details
-            )
-            if ($Dialog.IsValidForm()) {
-                $Dialog.RemoveKey("Errors")
-            } else {
-                $hErrors = [ordered]@{}
-                $iMaxLength = 0
-                foreach ($item in $Dialog.Rows) {
-                    if (($item.Type -eq "textbox") -and (-not $item.IsValidText())) {
-                        if ($item.Header.Length -gt $iMaxLength) { $iMaxLength = $item.Header.Length }
-                        $sFieldName = if ($item.FieldNameInErrorReason) {
-                            $item.FieldNameInErrorReason
-                        } else {
-                            $item.Header
-                        }
-                        $sReason = if ($item.ValidationErrorReason) {
-                            $item.ValidationErrorReason
-                        } else {
-                            "must match the following regex $($item.Regex)"
-                        }
-                        $hErrors.Add($sFieldName, $sReason)
-                    }
-                }
-                if ($CustomErrorMessage) {
-                    Write-Host $CustomErrorMessage -ForegroundColor Red
-                } else {
-                    if ($hErrors.Keys.Count -gt 1) {
-                        Write-Host $ErrorMessageFields -ForegroundColor Red
-                    } else {
-                        Write-Host $ErrorMessageOneField -ForegroundColor Red
-                    }    
-                }
-                if ($Details) {
-                    foreach ($item in $hErrors.Keys) {
-                        $iAlign = if ($PropertyAlign -eq "Left") { -1 } else { 1 }
-                        Write-Host ("{0,$($iMaxLength * $iAlign)} " -f $item) -ForegroundColor Red -NoNewline
-                        Write-Host $hErrors[$item]
-                    }    
-                }
-                $Dialog.Errors = $hErrors
-            }
-        }
         function Invoke {
             Param(
                 [Parameter(Mandatory)]
@@ -371,17 +247,9 @@ function Invoke-CLIDialog {
                 [switch]$DontSpaceAfterDialog
             )
             if ($Validate) {
-                $oResult = Show -Dialog $Dialog -DontSpaceAfterDialog:$DontSpaceAfterDialog
-                while ((-not $Dialog.IsValidForm()) -and ($oResult.Action -ne "Cancel") -and ($oResult.Action -ne "Exit") -and ($oResult.Action -ne "Back")) {
-                    Write-ErrorMessage -Dialog $Dialog -Details:$ErrorDetails -CustomErrorMessage $CustomErrorMessage
-                    if ($PauseAfterErrorMessage) {
-                        Invoke-Pause -ReplaceByLine -LineColor Red -MessageColor White
-                    }
-                    $oResult = Show -Dialog $Dialog -DontSpaceAfterDialog:$DontSpaceAfterDialog
-                }
-                return $oResult
+                return $Dialog.InvokeValidate($true)
             } else {
-                return Show -Dialog $Dialog -DontSpaceAfterDialog:$DontSpaceAfterDialog
+                return $Dialog.Invoke($true)
             }
         }
 
@@ -443,11 +311,19 @@ function Invoke-CLIDialog {
         }
     }
     Process {
+        # Propagate Invoke-CLIDialog parameters to the dialog object
+        if ($CustomErrorMessage) { $oDialog.ValidationErrorMessage = $CustomErrorMessage }
+        if ($ErrorDetails) { $oDialog.ValidationErrorDetails = $true }
+        if ($PauseAfterErrorMessage) { $oDialog.PauseAfterErrorMessage = $true }
+        $oDialog.ErrorMessageOneField = $ErrorMessageOneField
+        $oDialog.ErrorMessageMultipleFields = $ErrorMessageFields
+        $oDialog.ErrorsPropertiesAlign = $ErrorsPropertiesAlign
+
         if (-not $KeepValues) {
             $oDialog.Reset()
         }
         if ($Execute) {
-            Execute -Dialog $oDialog -Validate:$Validate -DontSpaceAfterDialog:$DontSpaceAfterDialog 
+            Execute -Dialog $oDialog -Validate:$Validate -DontSpaceAfterDialog:$DontSpaceAfterDialog
         } else {
             Invoke -Dialog $oDialog -Validate:$Validate -DontSpaceAfterDialog:$DontSpaceAfterDialog
         }

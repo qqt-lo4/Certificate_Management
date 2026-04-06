@@ -225,6 +225,10 @@
         [bool]$PauseAfterErrorMessage,
         [string]$ValidationErrorMessage,
         [bool]$ValidationErrorDetails,
+        [string]$ErrorMessageOneField = "Error: The following field has an invalid value.",
+        [string]$ErrorMessageMultipleFields = "Error: Some fields have invalid values.",
+        [ValidateSet("Right", "Left")]
+        [string]$ErrorsPropertiesAlign = "Right",
         [ref]$SelectedObjectsArray,
         [string]$SelectedObjectsUniqueProperty
     )
@@ -389,6 +393,10 @@
     $hResult.AllButtons = $hAllButtons
     $hResult.PauseAfterErrorMessage = $PauseAfterErrorMessage
     $hResult.ValidationErrorDetails = $ValidationErrorDetails
+    $hResult.ValidationErrorMessage = $ValidationErrorMessage
+    $hResult.ErrorMessageOneField = $ErrorMessageOneField
+    $hResult.ErrorMessageMultipleFields = $ErrorMessageMultipleFields
+    $hResult.ErrorsPropertiesAlign = $ErrorsPropertiesAlign
     $hResult.AllObjectsWithValues = $hObjectsWithValue
     $hResult.SelectedObjectsArray = $SelectedObjectsArray
     $hResult.SelectedObjectsUniqueProperty = $SelectedObjectsUniqueProperty
@@ -744,12 +752,20 @@
         return $hErrors
     }
 
-    $hResult | Add-Member -MemberType ScriptMethod -Name "WriteErrorMessage" -Value {
+    $hResult | Add-Member -MemberType ScriptMethod -Name "SetErrorMessages" -Value {
         Param(
-            [string]$PropertyAlign = "Right",
-            [string]$OneFieldErrorMessage = "Error: The following field has an invalid value.",
-            [string]$SeveralFieldsErrorMessage = "Error: Some fields have invalid values."
+            [string]$ValidationErrorMessage,
+            [string]$ErrorMessageOneField,
+            [string]$ErrorMessageMultipleFields,
+            [bool]$ValidationErrorDetails
         )
+        if ($ValidationErrorMessage) { $this.ValidationErrorMessage = $ValidationErrorMessage }
+        if ($ErrorMessageOneField) { $this.ErrorMessageOneField = $ErrorMessageOneField }
+        if ($ErrorMessageMultipleFields) { $this.ErrorMessageMultipleFields = $ErrorMessageMultipleFields }
+        $this.ValidationErrorDetails = $ValidationErrorDetails
+    }
+
+    $hResult | Add-Member -MemberType ScriptMethod -Name "WriteErrorMessage" -Value {
         if ($this.IsValidForm()) {
             $this.RemoveKey("Errors")
         } else {
@@ -771,21 +787,18 @@
                     $hErrors.Add($sFieldName, $sReason)
                 }
             }
-            if ($this.ValidationErrorMessage) {
-                Write-Host $this.ValidationErrorMessage -ForegroundColor Red
+            $sErrorMessage = if ($this.ValidationErrorMessage) {
+                $this.ValidationErrorMessage
             } else {
-                if ($hErrors.Keys.Count -gt 1) {
-                    Write-Host $SeveralFieldsErrorMessage -ForegroundColor Red
-                } else {
-                    Write-Host $OneFieldErrorMessage -ForegroundColor Red
-                }    
+                if ($hErrors.Keys.Count -gt 1) { $this.ErrorMessageMultipleFields } else { $this.ErrorMessageOneField }
             }
+            Write-Host $sErrorMessage -ForegroundColor Red
             if ($this.ValidationErrorDetails) {
                 foreach ($item in $hErrors.Keys) {
-                    $iAlign = if ($PropertyAlign -eq "Left") { -1 } else { 1 }
+                    $iAlign = if ($this.ErrorsPropertiesAlign -eq "Left") { -1 } else { 1 }
                     Write-Host ("{0,$($iMaxLength * $iAlign)} " -f $item) -ForegroundColor Red -NoNewline
                     Write-Host $hErrors[$item]
-                }    
+                }
             }
             $this.Errors = $hErrors
         }
@@ -809,7 +822,7 @@
             $this.Reset()
         }
         $oResult = $this._Invoke()
-        while (-not $this.IsValidForm()) {
+        while ((-not $this.IsValidForm()) -and ($oResult.Action -ne "Cancel") -and ($oResult.Action -ne "Exit") -and ($oResult.Action -ne "Back")) {
             $this.WriteErrorMessage()
             if ($this.PauseAfterErrorMessage) {
                 Invoke-Pause -ReplaceByLine
@@ -819,38 +832,51 @@
         return $oResult
     }
     
+    # _Invoke is kept for backward compatibility, delegates to _Show
     $hResult | Add-Member -MemberType ScriptMethod -Name "_Invoke" -Value {
+        return $this._Show($false)
+    }
+
+    $hResult | Add-Member -MemberType ScriptMethod -Name "_Show" -Value {
+        Param(
+            [bool]$DontSpaceAfterDialog = $false
+        )
         $iFormHeight = $this.GetTextHeight($true)
+        $this.SetSeparatorLocation()
         $oResult = $null
         $this.DrawStatic()
         $bPreviousTreatCtrlC = [Console]::TreatControlCAsInput
         try {
-			[Console]::TreatControlCAsInput = $true
-			[console]::CursorVisible=$false #prevents cursor flickering
-			$startPos = [System.Console]::CursorTop
-			$this.DrawDynamic()
+            [Console]::TreatControlCAsInput = $true
+            [console]::CursorVisible = $false
+            $this.DrawDynamic()
             While ($oResult -eq $null) {
-				$Key = [Console]::ReadKey($true)
+                $Key = [Console]::ReadKey($true)
                 $oResult = $this.PressKey($Key)
 
+                $iOldFormHeight = $iFormHeight
+                $iFormHeight = $this.GetTextHeight($true)
+                $startPos = [System.Console]::CursorTop - $iOldFormHeight
                 [System.Console]::SetCursorPosition(0, $startPos)
                 $this.DrawDynamic()
-                $iNewFormHeight = $this.GetTextHeight($true)
                 # Clear ghost lines when height decreased
-                if ($iNewFormHeight -lt $iFormHeight) {
+                if ($iFormHeight -lt $iOldFormHeight) {
                     $iWindowWidth = (Get-Host).UI.RawUI.WindowSize.Width
-                    for ($g = 0; $g -lt ($iFormHeight - $iNewFormHeight); $g++) {
+                    for ($g = 0; $g -lt ($iOldFormHeight - $iFormHeight); $g++) {
                         Write-Host (" " * $iWindowWidth)
                     }
                 }
-                $iFormHeight = $iNewFormHeight
-			}
-		}
-		finally {
-			[Console]::TreatControlCAsInput = $bPreviousTreatCtrlC
-			[System.Console]::SetCursorPosition(0, $startPos + $iFormHeight) | Out-Null
-			[System.Console]::CursorVisible = $true
-		}
+            }
+        }
+        finally {
+            [Console]::TreatControlCAsInput = $bPreviousTreatCtrlC
+            $startPos = [System.Console]::CursorTop - $iFormHeight
+            [System.Console]::SetCursorPosition(0, $startPos + $iFormHeight) | Out-Null
+            [System.Console]::CursorVisible = $true
+        }
+        if (-not $DontSpaceAfterDialog) {
+            Write-Host ""
+        }
         if ($oResult -ne $null) {
             $hResult = @{
                 Button = $oResult
@@ -868,16 +894,28 @@
             }
             switch ($hResult.Type) {
                 { $_ -in @("Action", "Action_Scriptblock") } {
-                    return New-DialogResultAction -Action $oResult.Action -DialogResult $hResult -Value $oResult.Object
+                    if ($hResult.Form.SelectedObjectsArray) {
+                        return New-DialogResultAction -Action $oResult.Action -DialogResult $hResult -Value $hResult.Form.SelectedObjectsArray
+                    } elseif ($oResult.Object) {
+                        return New-DialogResultAction -Action $oResult.Action -DialogResult $hResult -Value $oResult.Object
+                    } elseif ($this.IsValidForm()) {
+                        $oValue = $hResult.Form.GetValue()
+                        return New-DialogResultAction -Action $oResult.Action -DialogResult $hResult -Value $oValue
+                    } else {
+                        return New-DialogResultAction -Action $oResult.Action -DialogResult $hResult -Value $oResult.Object
+                    }
                 }
                 "Scriptblock" {
-                    return New-DialogResultScriptblock -Action $oResult.Action -DialogResult $hResult -Value $oResult.Object
+                    return New-DialogResultScriptblock -DialogResult $hResult -Value $oResult.Object
                 }
                 "Value" {
-                    return New-DialogResultValue -Action $oResult.Action -DialogResult $hResult -Value $oResult.Object -SelectedProperties $oResult.ObjectSelectedProperties
+                    if ($oResult.Object) {
+                        return New-DialogResultValue -DialogResult $hResult -Value $oResult.Object -SelectedProperties $oResult.ObjectSelectedProperties
+                    } else {
+                        return New-DialogResultValue -DialogResult $hResult -Value $hResult.Button -SelectedProperties $oResult.ObjectSelectedProperties
+                    }
                 }
             }
-            return $hResult
         }
     }
     

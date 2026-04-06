@@ -613,15 +613,13 @@ function Connect-PKIServer {
         [Parameter(Mandatory)]
         [string]$PKIServer
     )
-    if (($Global:PKISession) -and ($Global:PKISession.State -eq "Opened") -and ($Global:PKISession.ComputerName -eq $PKIServer)) {
+    $oResult = Connect-CLIDialogPSSession -ComputerName $PKIServer -Credential $Global:PKICredential -Session $Global:PKISession -Message "Please provide credentials to connect to" -AllowCancel
+    if ($oResult -and $oResult.PSTypeNames[0] -notlike "DialogResult.Action.*") {
+        $Global:PKICredential = $oResult.Credential
+        $Global:PKISession = $oResult.Session
         return $true
-    } else {
-        if (($Global:PKISession.ComputerName -ne $PKIServer) -or (-not $Global:PKICredential)) {
-            $Global:PKICredential = Read-CLIDialogCredential -Message "Please provide credentials to connect to the PKI server"    
-        }
-        $Global:PKISession = New-PSSession -ComputerName $PKIServer -Credential $Global:PKICredential
-        return ($Global:PKISession.State -eq "Opened")
     }
+    return $false
 }
 
 function Get-CertificateNameFromFolder {
