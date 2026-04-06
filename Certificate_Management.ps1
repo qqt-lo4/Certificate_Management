@@ -764,7 +764,8 @@ function New-PFX_CLI {
 
     Merge-OpenSSLPFX @hMergeOptions
     if (Test-Path $sOutPFXFile) {
-        Write-Host "PFX generated successfully" -ForegroundColor Green
+        Write-Host "PFX generated successfully:" -ForegroundColor Green
+        Write-Host $sOutPFXFile
         Write-Host ""
     } else {
         Write-Host "PFX generation failed" -ForegroundColor Red
