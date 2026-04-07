@@ -220,8 +220,8 @@
     $aUnsupportedTypes = @()
     $aItems = @()
     for ($i = 0; $i -lt $Row.Count; $i++) {
-        if ($Row[$i].Type -in @("button", "checkbox", "space", "radiobutton")) {
-            if ($Row[$i].Type -ne "space") {
+        if ($Row[$i].Type -in @("button", "checkbox", "space", "radiobutton", "text")) {
+            if ($Row[$i].Type -notin @("space", "text")) {
                 $aItems += $i
             }
         } else {
