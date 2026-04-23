@@ -17,6 +17,8 @@
         - ANSI color escape sequences for terminal compatibility
         - Output as string array or direct to host
 
+        Requires the PSSomeDataThings module (provides Copy-Hashtable).
+
     .PARAMETER InputObject
         The objects to format as a table. This parameter is mandatory and accepts pipeline input.
         Can be any array of objects with properties to display.
@@ -86,10 +88,9 @@
 
     .NOTES
         Author: Loïc Ade
-        Created: 2025-01-16
-        Version: 1.0.1
-        Module: CLIDialog
-        Dependencies: Get-ColumnFormat, Copy-Hashtable, Convert-ConsoleColorToInt
+        Version: 1.1.0
+
+        External dependencies: PSSomeDataThings (Copy-Hashtable)
 
         The function uses ANSI escape sequences for color formatting, which are supported
         in PowerShell 5.1+ and PowerShell Core. The automatic width column feature allows
@@ -100,8 +101,15 @@
         based on data type.
 
         History:
-        1.0.1 - 2026-03-20 - Fix: header underline now respects right-aligned columns
-        1.0.0 - 2025-01-16 - Initial version
+        1.1.0 - 2026-04-19 - Loïc Ade
+            - HeaderColor default now resolves from the current CLI dialog theme (Get-CLIDialogTheme)
+            - Added runtime check for PSSomeDataThings module availability
+
+        1.0.1 - 2026-03-20 - Loïc Ade
+            - Fix: header underline now respects right-aligned columns
+            
+        1.0.0 - 2025-01-16 - Loïc Ade
+            - Initial version
 
     .LINK
         Format-Table
@@ -113,12 +121,15 @@
         [Parameter(Position = 1)]
         [object[]]$Property,
         [switch]$HideHeader,
-        [System.ConsoleColor]$HeaderColor = (Get-Host).UI.RawUI.ForegroundColor,
+        [System.ConsoleColor]$HeaderColor = (Get-CLIDialogTheme "TableHeaderForegroundColor"),
         [switch]$HeaderUnderline,
         [switch]$ToString,
         [int]$ContentMaxWidth = (Get-Host).UI.RawUI.WindowSize.Width
     )
     Begin {
+        if (-not (Get-Module -Name PSSomeDataThings) -and -not (Get-Module -ListAvailable -Name PSSomeDataThings)) {
+            throw "Format-TableCustom requires the PSSomeDataThings module (provides Copy-Hashtable). Please install or import it before calling this function."
+        }
         function Get-HashtableName {
             Param(
                 [Parameter(Mandatory, Position = 0)]

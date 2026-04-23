@@ -8,6 +8,8 @@ function Read-CLIDialogIP {
         Supports IPv4 addresses with optional CIDR mask notation (e.g., "192.168.1.1/24").
         Built on top of Read-CLIDialogValidatedValue for consistent dialog experience.
 
+        Requires the PSSomeDataThings and PSSomeNetworkThings modules (provide Test-StringIsIP and related helpers).
+
         Validation options:
         - Standard: IPv4 with or without mask (e.g., "192.168.1.1" or "192.168.1.1/24")
         - MandatoryMask: Requires CIDR notation (e.g., "192.168.1.1/24")
@@ -79,12 +81,14 @@ function Read-CLIDialogIP {
 
     .NOTES
         Author: Loïc Ade
-        Created: 2025-11-22
-        Version: 2.0.0
-        Module: CLIDialog
-        Dependencies: Read-CLIDialogValidatedValue, Test-StringIsIP
+        Version: 2.1.0
+
+        External dependencies: PSSomeDataThings, PSSomeNetworkThings (Test-StringIsIP)
 
         VERSION HISTORY:
+
+        Version 2.1.0 - 2026-04-18 - Loïc Ade
+            - Added runtime check for PSSomeDataThings and PSSomeNetworkThings module availability
 
         Version 2.0.0 - 2025-11-22 - Loïc Ade
             - Replaced Read-Host with Read-CLIDialogValidatedValue for interactive CLI Dialog interface
@@ -112,6 +116,12 @@ function Read-CLIDialogIP {
         [switch]$MaskForbidden,
         [switch]$AllowCancel
     )
+
+    foreach ($sRequiredModule in @("PSSomeDataThings", "PSSomeNetworkThings")) {
+        if (-not (Get-Module -Name $sRequiredModule) -and -not (Get-Module -ListAvailable -Name $sRequiredModule)) {
+            throw "Read-CLIDialogIP requires the $sRequiredModule module. Please install or import it before calling this function."
+        }
+    }
 
     # Create custom validation scriptblock using Test-StringIsIP
     $bAllowEmpty = [bool]$AllowEmpty

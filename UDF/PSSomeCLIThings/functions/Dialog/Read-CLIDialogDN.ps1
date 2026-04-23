@@ -8,6 +8,8 @@ function Read-CLIDialogDN {
         Supports common RDN attributes: CN, OU, O, L, ST, C, E, DC.
         Built on top of Read-CLIDialogValidatedValue for consistent dialog experience.
 
+        Requires the PSSomeDataThings module (provides Get-DNRegex).
+
     .PARAMETER Header
         Header text displayed above the input field.
         Default: "Please enter a Distinguished Name (DN)"
@@ -47,12 +49,14 @@ function Read-CLIDialogDN {
 
     .NOTES
         Author: Loïc Ade
-        Created: 2026-03-14
-        Version: 1.0.0
-        Module: CLIDialog
-        Dependencies: Read-CLIDialogValidatedValue, Get-DNRegex
+        Version: 1.1.0
+
+        External dependencies: PSSomeDataThings (Get-DNRegex)
 
         CHANGELOG:
+
+        Version 1.1.0 - 2026-04-18 - Loïc Ade
+            - Added runtime check for PSSomeDataThings module availability
 
         Version 1.0.0 - 2026-03-14 - Loïc Ade
             - Initial release
@@ -67,6 +71,10 @@ function Read-CLIDialogDN {
         [switch]$AllowCancel,
         [switch]$AllowBack
     )
+
+    if (-not (Get-Module -Name PSSomeDataThings) -and -not (Get-Module -ListAvailable -Name PSSomeDataThings)) {
+        throw "Read-CLIDialogDN requires the PSSomeDataThings module (provides Get-DNRegex). Please install or import it before calling this function."
+    }
 
     $sDNRegex = Get-DNRegex -FullLine
     $validationScript = {

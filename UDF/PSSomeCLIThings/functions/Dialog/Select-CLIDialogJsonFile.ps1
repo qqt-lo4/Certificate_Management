@@ -8,6 +8,8 @@ function Select-CLIDialogJsonFile {
         selection dialog showing specified properties from each JSON file. The user can select one file,
         and the function returns the parsed JSON content as a PowerShell object.
 
+        Requires the PSSomeDataThings module (provides Get-JSONFileList).
+
         Key features:
         - Automatic JSON file discovery in a folder
         - Multiple file filter patterns (*.json, *.jsonc)
@@ -142,11 +144,10 @@ function Select-CLIDialogJsonFile {
         Custom colors and compact header layout with selected item display.
 
     .NOTES
-        Module: CLIDialog
         Author: Loïc Ade
-        Created: 2024-09-21
-        Version: 1.1.0
-        Dependencies: Get-JSONFileList, Select-CLIDialogObjectInArray, Format-TableCustom, Set-StringFormat
+        Version: 1.2.0
+
+        External dependencies: PSSomeDataThings (Get-JSONFileList)
 
         This function is designed for configuration management scenarios where JSON files are used
         to store settings, profiles, or templates, and users need to select one interactively.
@@ -245,6 +246,10 @@ function Select-CLIDialogJsonFile {
 
         CHANGELOG:
 
+        Version 1.2.0 - 2026-04-19 - Loïc Ade
+            - Added runtime check for PSSomeDataThings module availability
+            - Color parameter defaults now resolve from the current CLI dialog theme (Get-CLIDialogTheme)
+
         Version 1.1.0 - 2024-09-21 - Loïc Ade
             - Added Filter parameter to filter files in JsonFolder
             - Support for multiple file patterns (*.json, *.jsonc)
@@ -264,20 +269,23 @@ function Select-CLIDialogJsonFile {
         [string[]]$JsonColumn = "Description",
         [string[]]$Sort = "Description",
         [string]$SelectHeaderMessage = "Please select an item:",
-        [System.ConsoleColor]$HeaderColor = (Get-Host).UI.RawUI.ForegroundColor,
+        [System.ConsoleColor]$HeaderColor = (Get-CLIDialogTheme "ForegroundColor"),
         [AllowNull()]
         [string]$FooterMessage = "Please type item number",
-        [System.ConsoleColor]$FooterColor = (Get-Host).UI.RawUI.ForegroundColor,
+        [System.ConsoleColor]$FooterColor = (Get-CLIDialogTheme "ForegroundColor"),
         [string]$ErrorMessage,
         [string]$FilterFunction,
         $FilteredValue,
         [switch]$AlwaysAskUser,
         [string[]]$Filter = @("*.json", "*.jsonc"),
-        [System.ConsoleColor]$SeparatorColor = (Get-Host).UI.RawUI.ForegroundColor,
+        [System.ConsoleColor]$SeparatorColor = (Get-CLIDialogTheme "SeparatorColor"),
         [switch]$HeaderTextInSeparator,
         [switch]$DisplaySelectedItem,
         [string]$SelectedItemText = "Selected item:"
     )
+    if (-not (Get-Module -Name PSSomeDataThings) -and -not (Get-Module -ListAvailable -Name PSSomeDataThings)) {
+        throw "Select-CLIDialogJsonFile requires the PSSomeDataThings module (provides Get-JSONFileList). Please install and import it before calling this function."
+    }
     $arrayJson = Get-JSONFileList -JsonFolder $JsonFolder -JsonColumn $JsonColumn -Filter $Filter
     if ($filterFunction) {
         $arrayJson = $(&$filterFunction $arrayJson $filteredValue)

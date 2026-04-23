@@ -293,6 +293,9 @@
             if ($Properties[$p].Text) {
                 $hTextboxProperties.Text = $Properties[$p].Text
             }
+            if ($Properties[$p].PasswordChar) {
+                $hTextboxProperties.PasswordChar = $Properties[$p].PasswordChar
+            }
             $aDialogLines += New-CLIDialogTextBox @hTextboxProperties
         }
         $aDialogLines += New-CLIDialogSeparator -AutoLength -ForegroundColor $SeparatorColor

@@ -75,6 +75,9 @@
     .PARAMETER Contact
         Filter to contact objects.
 
+    .PARAMETER GroupPolicy
+        Filter to Group Policy container objects.
+
     .PARAMETER SecurityMasks
         Controls which security descriptor parts are returned when requesting nTSecurityDescriptor.
         By default, the DirectorySearcher does not return security descriptors. Set this to
@@ -162,37 +165,50 @@
         [Parameter(ParameterSetName = "LdapFilter")]
         [Parameter(ParameterSetName = "Filter")]
         [Parameter(ParameterSetName = "Identity")]
+        [Parameter(ParameterSetName = "Path")]
         [switch]$Computer,
 
         [Parameter(ParameterSetName = "LdapFilter")]
         [Parameter(ParameterSetName = "Filter")]
         [Parameter(ParameterSetName = "Identity")]
+        [Parameter(ParameterSetName = "Path")]
         [switch]$User,
 
         [Parameter(ParameterSetName = "LdapFilter")]
         [Parameter(ParameterSetName = "Filter")]
         [Parameter(ParameterSetName = "Identity")]
+        [Parameter(ParameterSetName = "Path")]
         [switch]$OU,
 
         [Parameter(ParameterSetName = "LdapFilter")]
         [Parameter(ParameterSetName = "Filter")]
         [Parameter(ParameterSetName = "Identity")]
+        [Parameter(ParameterSetName = "Path")]
         [switch]$Container,
 
         [Parameter(ParameterSetName = "LdapFilter")]
         [Parameter(ParameterSetName = "Filter")]
         [Parameter(ParameterSetName = "Identity")]
+        [Parameter(ParameterSetName = "Path")]
         [switch]$Volume,
 
         [Parameter(ParameterSetName = "LdapFilter")]
         [Parameter(ParameterSetName = "Filter")]
         [Parameter(ParameterSetName = "Identity")]
+        [Parameter(ParameterSetName = "Path")]
         [switch]$Group,
 
         [Parameter(ParameterSetName = "LdapFilter")]
         [Parameter(ParameterSetName = "Filter")]
         [Parameter(ParameterSetName = "Identity")]
+        [Parameter(ParameterSetName = "Path")]
         [switch]$Contact,
+
+        [Parameter(ParameterSetName = "LdapFilter")]
+        [Parameter(ParameterSetName = "Filter")]
+        [Parameter(ParameterSetName = "Identity")]
+        [Parameter(ParameterSetName = "Path")]
+        [switch]$GroupPolicy,
 
         [Parameter()]
         [System.DirectoryServices.SecurityMasks]$SecurityMasks
@@ -207,6 +223,7 @@
                 [switch]$Volume,
                 [switch]$Group,
                 [switch]$Contact,
+                [switch]$GroupPolicy,
                 [string]$Identity
             )
             $hTypes = @{
@@ -217,8 +234,9 @@
                 "Volume" = "(&(objectCategory=Volume)(objectClass=volume))"
                 "Group" = "(&(objectCategory=Group)(objectClass=group))"
                 "Contact" = "(&(objectCategory=Person)(objectClass=contact))"
+                "GroupPolicy" = "(objectClass=groupPolicyContainer)"
             }
-            if ($Computer -or $User -or $OU -or $Container -or $Volume -or $Group -or $Contact) {
+            if ($Computer -or $User -or $OU -or $Container -or $Volume -or $Group -or $Contact -or $GroupPolicy) {
                 $sResult = "(|"
                 foreach ($sParam in $PSBoundParameters.Keys) {
                     if ($PSBoundParameters[$sParam]) {
@@ -292,6 +310,12 @@
             }
         }
         if ($PSBoundParameters.ContainsKey('SecurityMasks')) { $ds.SecurityMasks = $SecurityMasks }
+        # In Path mode, the DirectoryEntry is bound to a specific DN. The default
+        # subtree search would return its children — force Base scope so the
+        # entry itself is returned, with a wildcard filter so it matches.
+        if ($PSCmdlet.ParameterSetName -eq "Path" -and -not $SearchScope) {
+            $ds.SearchScope = [System.DirectoryServices.SearchScope]::Base
+        }
         if ($Properties) {
             $ds.PropertiesToLoad.Add("objectclass") | Out-Null
             foreach ($sProperty in $Properties) {
@@ -300,20 +324,20 @@
         }
         $sLdapFilter = switch ($PSCmdlet.ParameterSetName) {
             "Path" {
-                ""
+                "(objectClass=*)"
             }
             "Identity" {
                 if ($bDN) {
-                    Get-LdapFilter -Computer:$Computer -User:$User -OU:$Ou -Container:$Container -Volume:$Volume -Group:$Group -Contact:$Contact
+                    Get-LdapFilter -Computer:$Computer -User:$User -OU:$Ou -Container:$Container -Volume:$Volume -Group:$Group -Contact:$Contact -GroupPolicy:$GroupPolicy
                 } else {
-                    Get-LdapFilter -Computer:$Computer -User:$User -OU:$Ou -Container:$Container -Volume:$Volume -Group:$Group -Contact:$Contact -Identity $Identity
+                    Get-LdapFilter -Computer:$Computer -User:$User -OU:$Ou -Container:$Container -Volume:$Volume -Group:$Group -Contact:$Contact -GroupPolicy:$GroupPolicy -Identity $Identity
                 }
             }
             "LdapFilter" {
                 $LDAPFilter
             }
             "Filter" {
-                Get-LdapFilter -Computer:$Computer -User:$User -OU:$Ou -Container:$Container -Volume:$Volume -Group:$Group -Contact:$Contact
+                Get-LdapFilter -Computer:$Computer -User:$User -OU:$Ou -Container:$Container -Volume:$Volume -Group:$Group -Contact:$Contact -GroupPolicy:$GroupPolicy
             }
         }
         $ds.Filter = $sLdapFilter

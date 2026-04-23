@@ -261,6 +261,13 @@ function Read-CLIDialogValidatedValue {
 
         CHANGELOG:
 
+        Version 2.2.0 - 2026-04-22 - Loïc Ade
+            - DefaultValue now pre-fills the textbox text instead of decorating the header
+              with "[DefaultValue]". The "blank submission returns DefaultValue" fallback and
+              the regex "|^$" extension have been removed: they existed only to make the
+              old header-decoration UX usable and are no longer relevant now that the
+              textbox is pre-filled.
+
         Version 2.1.0 - 2026-03-14 - Loïc Ade
             - Added AllowBack parameter to display a Back button
 
@@ -300,18 +307,13 @@ function Read-CLIDialogValidatedValue {
     }
     $hTextboxParameters = @{
         Name = $PropertyName
+        Header = $PropertyName
     }
-    $hTextboxParameters.Header = if ($DefaultValue) {
-        "$PropertyName [$DefaultValue]"
-    } else {
-        $PropertyName
+    if ($DefaultValue) {
+        $hTextboxParameters.Text = $DefaultValue
     }
     if ($ValidationMethod -is [string]) {
-        $hTextboxParameters.Regex = if ($DefaultValue) {
-            "$ValidationMethod|^$"
-        } else {
-            $ValidationMethod
-        }
+        $hTextboxParameters.Regex = $ValidationMethod
     } elseif ($ValidationMethod -is [scriptblock]) {
         $hTextboxParameters.ValidationScript = $ValidationMethod
     } else {
@@ -325,11 +327,7 @@ function Read-CLIDialogValidatedValue {
     $oDialogResult = Invoke-CLIDialog $oDialogLines -Validate
     if (($oDialogResult.Type -eq "Action") -and ($oDialogResult.Action -eq "Validate")) {
         $oDialogResultForm = $oDialogResult.DialogResult.Form.GetValue($true)
-        if (($oDialogResultForm."$PropertyName" -eq "") -and $DefaultValue) {
-            return New-DialogResultValue -Value $DefaultValue -DialogResult $oDialogResult.DialogResult
-        } else {
-            return New-DialogResultValue -Value $oDialogResultForm."$PropertyName" -DialogResult $oDialogResult.DialogResult
-        }
+        return New-DialogResultValue -Value $oDialogResultForm."$PropertyName" -DialogResult $oDialogResult.DialogResult
     } else {
         return $oDialogResult
     }

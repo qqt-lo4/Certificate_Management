@@ -70,13 +70,13 @@ function Read-CLIDialogNewPassword {
 
     .NOTES
         Author: Loïc Ade
-        Created: 2026-03-15
-        Version: 1.1.0
-        Module: CLIDialog
-        Dependencies: New-CLIDialogSeparator, New-CLIDialogTextBox, New-CLIDialogButton,
-                     New-CLIDialogObjectsRow, Invoke-CLIDialog, Invoke-YesNoCLIDialog
+        Version: 1.2.0
 
         CHANGELOG:
+
+        Version 1.2.0 - 2026-04-18 - Loïc Ade
+            - New parameters: PasswordChar, Prefix, FocusedPrefix (previously hardcoded)
+            - Refactored textbox construction: shared options hashtable instead of per-field cloning
 
         Version 1.1.0 - 2026-04-04 - Loïc Ade
             - Added theme support via Get-CLIDialogTheme for default colors
@@ -102,42 +102,36 @@ function Read-CLIDialogNewPassword {
         [switch]$AllowBack,
         [switch]$AllowCancel,
         [System.ConsoleColor]$SeparatorColor = (Get-CLIDialogTheme "SeparatorColor"),
-        [System.ConsoleColor]$ErrorColor = (Get-CLIDialogTheme "ErrorColor")
+        [System.ConsoleColor]$ErrorColor = (Get-CLIDialogTheme "ErrorColor"),
+        [char]$PasswordChar = "*",
+        [string]$Prefix = "  ",
+        [string]$FocusedPrefix = "> "
     )
 
     $bAllowEmpty = [bool]$AllowEmpty
     $sValidationRegex = if ($bAllowEmpty) { "^.*$" } else { "^.+$" }
 
     while ($true) {
+        $sDefaultValue = if ($DefaultValue) {
+            $DefaultValue
+        } else {
+            ""
+        }
+
         $hTextBoxOptions = @{
-            PasswordChar = "*"
-            Prefix = "  "
-            FocusedPrefix = "> "
+            PasswordChar = $PasswordChar
+            Prefix = $Prefix
+            FocusedPrefix = $FocusedPrefix
+            Regex = $sValidationRegex 
+            Text = $sDefaultValue
         }
 
         $aDialogLines = @(
             New-CLIDialogSeparator -AutoLength -Text $Header -ForegroundColor $SeparatorColor
+            New-CLIDialogTextBox @hTextBoxOptions -Header $PasswordPropertyName -Name "Password" 
+            New-CLIDialogTextBox @hTextBoxOptions -Header $ConfirmPropertyName -Name "Confirm"
+            New-CLIDialogSeparator -AutoLength -ForegroundColor $SeparatorColor
         )
-
-        $hPwdParams = $hTextBoxOptions.Clone()
-        $hPwdParams.Header = $PasswordPropertyName
-        $hPwdParams.Name = "Password"
-        $hPwdParams.Regex = $sValidationRegex
-        if ($DefaultValue) {
-            $hPwdParams.Text = $DefaultValue
-        }
-        $aDialogLines += New-CLIDialogTextBox @hPwdParams
-
-        $hConfirmParams = $hTextBoxOptions.Clone()
-        $hConfirmParams.Header = $ConfirmPropertyName
-        $hConfirmParams.Name = "Confirm"
-        $hConfirmParams.Regex = $sValidationRegex
-        if ($DefaultValue) {
-            $hConfirmParams.Text = $DefaultValue
-        }
-        $aDialogLines += New-CLIDialogTextBox @hConfirmParams
-
-        $aDialogLines += New-CLIDialogSeparator -AutoLength -ForegroundColor $SeparatorColor
 
         $aButtons = @(
             New-CLIDialogButton -Text "&Ok" -Validate

@@ -7,6 +7,8 @@ function Select-CLIDialogObjectInArray {
         This function is a comprehensive merger of Select-CLIObjectInArray and Select-CLIDialogObject,
         providing a unified interface for object selection with extensive customization options.
 
+        The -UseArrayPageExtractor switch requires the PSSomeDataThings module (provides New-ArrayPageExtractor).
+
         Key features:
         - Automatic pagination with configurable items per page
         - Single or multi-selection modes with checkboxes
@@ -252,14 +254,10 @@ function Select-CLIDialogObjectInArray {
         Using a string array with a custom column name for better readability.
 
     .NOTES
-        Module: CLIDialog
         Author: Loïc Ade
-        Created: 2025-10-25
-        Version: 1.3.0
-        Dependencies: New-CLIDialog, New-CLIDialogButton, New-CLIDialogSeparator, New-CLIDialogText,
-                     New-CLIDialogTableItems, New-CLIDialogObjectsRow, Invoke-CLIDialog,
-                     New-DialogResultValue, New-DialogResultAction, Invoke-YesNoCLIDialog,
-                     Read-NumericValue, New-ArrayPageExtractor (optional)
+        Version: 1.5.0
+
+        External dependencies (only when -UseArrayPageExtractor is used): PSSomeDataThings (New-ArrayPageExtractor)
 
         This function represents a comprehensive solution for object selection in PowerShell CLI
         environments, merging the best features of two previous implementations while maintaining
@@ -321,6 +319,17 @@ function Select-CLIDialogObjectInArray {
 
         CHANGELOG:
 
+        Version 1.5.0 - 2026-04-19 - Loïc Ade
+            - Added runtime check for PSSomeDataThings module when -UseArrayPageExtractor is used
+            - Color parameter defaults now resolve from the current CLI dialog theme (Get-CLIDialogTheme)
+
+        Version 1.4.0 - 2026-04-09 - Loïc Ade
+            - Added PassthroughActions parameter: actions in this list are returned to the caller
+              with FocusedObject and FocusedIndex instead of being processed internally
+            - Added DefaultFocusedIndex parameter: pre-positions focus on a specific item by
+              absolute index (auto-calculates page and position within page)
+            - Fixed FocusedRow offset bug in New-CLIObjectListPage (removed erroneous +1 offset)
+
         Version 1.3.0 - 2026-03-22 - Loïc Ade
             - Renamed ShowBackButton to AllowBack (ShowBackButton kept as alias) for consistency with other Select-* functions
             - Added AllowCancel parameter to display a Cancel button
@@ -363,10 +372,10 @@ function Select-CLIDialogObjectInArray {
         [object[]]$SelectedColumns,
         [object]$Sort,
         [string]$SelectHeaderMessage = "Please select an item:",
-        [System.ConsoleColor]$HeaderColor = (Get-Host).UI.RawUI.ForegroundColor,
+        [System.ConsoleColor]$HeaderColor = (Get-CLIDialogTheme "ForegroundColor"),
         [AllowNull()]
         [string]$FooterMessage, # = "Please type item number",
-        [System.ConsoleColor]$FooterColor = (Get-Host).UI.RawUI.ForegroundColor,
+        [System.ConsoleColor]$FooterColor = (Get-CLIDialogTheme "ForegroundColor"),
         [AllowEmptyString()]
         [string]$EmptyArrayMessage = "No items in array",
         [object[]]$OtherMenuItems,
@@ -377,7 +386,7 @@ function Select-CLIDialogObjectInArray {
         [switch]$NoEmptyLineAfterItems,
         [ValidateScript({$_ -ge 1})]
         [int]$ItemsPerPage = 10,
-        [System.ConsoleColor]$SeparatorColor = (Get-Host).UI.RawUI.ForegroundColor,
+        [System.ConsoleColor]$SeparatorColor = (Get-CLIDialogTheme "SeparatorColor"),
         [switch]$HeaderTextInSeparator,
         [switch]$Space,
         [switch]$DontShowPageNumberWhenOnlyOnePage,
@@ -394,7 +403,9 @@ function Select-CLIDialogObjectInArray {
         [Alias("ShowBackButton")]
         [switch]$AllowBack,
         [switch]$UseArrayPageExtractor,
-        [string]$ValueColumnName = "Value"
+        [string]$ValueColumnName = "Value",
+        [string[]]$PassthroughActions,
+        [int]$DefaultFocusedIndex = -1
     )
 
     Begin {
@@ -436,7 +447,7 @@ function Select-CLIDialogObjectInArray {
                 [string]$OtherMenuItemsHeader,
                 [switch]$OtherMenuItemsInvisibleHeader,
                 [object[]]$SelectedColumns,
-                [System.ConsoleColor]$SeparatorColor = (Get-Host).UI.RawUI.ForegroundColor,
+                [System.ConsoleColor]$SeparatorColor = (Get-CLIDialogTheme "SeparatorColor"),
                 [switch]$MultiSelect,
                 [ref]$SelectedObjectsArray,
                 [string]$SelectedObjectsUniqueProperty,
@@ -480,7 +491,7 @@ function Select-CLIDialogObjectInArray {
 
             # Selection counter (MultiSelect only)
             if ($MultiSelect -and $SelectedObjectsArray) {
-                $aCLIObject += New-CLIDialogObjectsRow -Header "Selection" -HeaderSeparator " :  " -HeaderForegroundColor (Get-Host).UI.RawUI.ForegroundColor -Row @(
+                $aCLIObject += New-CLIDialogObjectsRow -Header "Selection" -HeaderSeparator " :  " -HeaderForegroundColor (Get-CLIDialogTheme "ForegroundColor") -Row @(
                     New-CLIDialogText -TextFunctionArguments @{SelectedObjectsArray = $SelectedObjectsArray} -TextFunction {
                         Param([ref]$SelectedObjectsArray)
                         if ($SelectedObjectsArray.Value -eq $null) {
@@ -573,8 +584,7 @@ function Select-CLIDialogObjectInArray {
 
             $oDialog = New-CLIDialog @hDialogParams
             if ($FocusedItemIndex -ge 0) {
-                # Header row (1) + item index
-                $oDialog.FocusedRow = 1 + $FocusedItemIndex
+                $oDialog.FocusedRow = $FocusedItemIndex
             }
             $oDialogResult = Invoke-CLIDialog -InputObject $oDialog
 
@@ -722,8 +732,18 @@ function Select-CLIDialogObjectInArray {
             $iFocusedItemIndex = -1
         }
 
+        # Override with DefaultFocusedIndex if specified and no SelectedObjects focus
+        if ($DefaultFocusedIndex -ge 0 -and $iFocusedItemIndex -lt 0 -and $aObjects.Count -gt 0) {
+            $iSafeFocusIndex = [Math]::Min($DefaultFocusedIndex, $aObjects.Count - 1)
+            $iPageNumber = [Math]::Floor($iSafeFocusIndex / $ItemsPerPage)
+            $iFocusedItemIndex = $iSafeFocusIndex - ($iPageNumber * $ItemsPerPage)
+        }
+
         # Initialize ArrayPageExtractor if requested
         $ArrayPageSelector = if ($UseArrayPageExtractor) {
+            if (-not (Get-Module -Name PSSomeDataThings) -and -not (Get-Module -ListAvailable -Name PSSomeDataThings)) {
+                throw "Select-CLIDialogObjectInArray -UseArrayPageExtractor requires the PSSomeDataThings module (provides New-ArrayPageExtractor). Please install or import it before calling this function."
+            }
             New-ArrayPageExtractor -Objects $aObjects -ItemsPerPage $ItemsPerPage
         } else {
             $null
@@ -780,6 +800,31 @@ function Select-CLIDialogObjectInArray {
 
             # Display dialog
             $oResult = New-CLIObjectListPage @hDialogParams
+
+            # Passthrough actions: return to caller with focused item info
+            if ($PassthroughActions -and $oResult.Action -and ($oResult.Action -in $PassthroughActions)) {
+                $iCurrentPageItemCount = if ($aPage) { @($aPage).Count } else { 0 }
+                $iFocusedPageIndex = -1
+                if ($oResult.DialogResult -and $oResult.DialogResult.Form) {
+                    $iDialogFocusedRow = $oResult.DialogResult.Form.FocusedRow
+                    if ($iDialogFocusedRow -ge 0 -and $iDialogFocusedRow -lt $iCurrentPageItemCount) {
+                        $iFocusedPageIndex = $iDialogFocusedRow
+                    }
+                }
+                if ($iFocusedPageIndex -lt 0) {
+                    $iFocusedPageIndex = 0
+                }
+                $iPageStart = if ($UseArrayPageExtractor) { $ArrayPageSelector.Page * $ItemsPerPage } else { $iPageNumber * $ItemsPerPage }
+                $iFocusedAbsoluteIndex = if ($aObjects.Count -gt 0) {
+                    [Math]::Min($iPageStart + $iFocusedPageIndex, $aObjects.Count - 1)
+                } else { -1 }
+                $oFocusedObject = if ($iFocusedAbsoluteIndex -ge 0) { $aObjects[$iFocusedAbsoluteIndex] } else { $null }
+
+                $hPassthroughResult = New-DialogResultAction -Action $oResult.Action
+                $hPassthroughResult.FocusedObject = $oFocusedObject
+                $hPassthroughResult.FocusedIndex = $iFocusedAbsoluteIndex
+                return $hPassthroughResult
+            }
 
             # Handle result
             switch ($oResult.PSTypeNames[0]) {

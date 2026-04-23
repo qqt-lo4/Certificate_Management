@@ -376,27 +376,212 @@ function Read-SAN {
     }
 }
 
+function Read-CertObjectAndSAN {
+    [CmdletBinding()]
+    Param(
+        [hashtable]$PreviousValues,
+        [switch]$AllowBack
+    )
+    $sFreeStringRegex = "^$|^[0-9a-zA-Zéèàùêëîï _.-]+$"
+    $hCertProps = [ordered]@{
+        CommonName = @{regex = "^[0-9a-zA-Z ._*-]+$"}
+        Organisation = @{regex = $sFreeStringRegex}
+        OrganisationalUnit = @{regex = $sFreeStringRegex}
+        Locality = @{regex = $sFreeStringRegex}
+        State = @{regex = $sFreeStringRegex}
+        CountryCode = @{regex = "^$|^..$"}
+    }
+    $sIPRegex = Get-IPRegex -FullLine
+    $sDNSRegex = Get-DNSRegex -FullLine -AllowWildcard
+    $sSANTextBoxName = "SAN"
+
+    $hPreviousCertObj = if ($PreviousValues -and $PreviousValues.CertificateObject) { $PreviousValues.CertificateObject } else { @{} }
+    $hPreviousSAN = if ($PreviousValues -and $PreviousValues.SAN) { $PreviousValues.SAN } else { @{} }
+    $sDefaultSAN = if ($hPreviousSAN.SANdns -or $hPreviousSAN.SANipaddress) {
+        ((@($hPreviousSAN.SANdns) + @($hPreviousSAN.SANipaddress)) | Where-Object { $_ }) -join "`n"
+    } else { "" }
+
+    $cSeparator = [System.ConsoleColor]::Blue
+    $cHeader = Get-CLIDialogTheme "HeaderForegroundColor"
+    $cHint = Get-CLIDialogTheme "HintColor"
+
+    $aDialogLines = @()
+    $aDialogLines += New-CLIDialogSeparator -AutoLength -Text "Please enter certificate object" -ForegroundColor $cSeparator
+    foreach ($k in $hCertProps.Keys) {
+        $hTB = @{
+            Header = $k
+            Name = $k
+            HeaderAlign = "Left"
+            Prefix = "  "
+            FocusedPrefix = "> "
+            HeaderForegroundColor = $cHeader
+            Regex = $hCertProps[$k].regex
+        }
+        if ($hPreviousCertObj.$k) { $hTB.Text = [string]$hPreviousCertObj.$k }
+        $aDialogLines += New-CLIDialogTextBox @hTB
+    }
+
+    $aDialogLines += New-CLIDialogSeparator -AutoLength -Text "Subject Alternative Names" -ForegroundColor $cSeparator
+    $aDialogLines += New-CLIDialogText -Text "Enter DNS names and IP addresses, one per line." -ForegroundColor $cHint -AddNewLine
+
+    $sbSANValidation = {
+        param($text)
+        foreach ($sLine in $text.Split("`n")) {
+            $sTrim = $sLine.Trim()
+            if ($sTrim.Length -gt 0 -and $sTrim -notmatch $sIPRegex -and $sTrim -notmatch $sDNSRegex) {
+                return $false
+            }
+        }
+        return $true
+    }.GetNewClosure()
+
+    $hSANTB = @{
+        Header = "DNS / IP"
+        Name = $sSANTextBoxName
+        MultiLine = $true
+        VisibleLines = 4
+        Prefix = "  "
+        FocusedPrefix = "> "
+        HeaderForegroundColor = $cHeader
+        ValidationScript = $sbSANValidation
+        ValidationErrorReason = "each line must be a valid DNS name or IP address"
+    }
+    if ($sDefaultSAN) { $hSANTB.Text = $sDefaultSAN }
+    $aDialogLines += New-CLIDialogTextBox @hSANTB
+
+    $aDialogLines += New-CLIDialogSeparator -AutoLength -ForegroundColor $cSeparator
+    $aButtons = @(New-CLIDialogButton -Text "&Ok" -Validate)
+    if ($AllowBack) { $aButtons += New-CLIDialogButton -Text "&Back" -Back }
+    $aDialogLines += New-CLIDialogObjectsRow -Header " " -Prefix "  " -FocusedPrefix "> " -HeaderSeparator "  " -Row $aButtons
+
+    $oDialogResult = Invoke-CLIDialog -InputObject $aDialogLines -Validate -ErrorDetails
+    if ($oDialogResult.Action -eq "Back") {
+        return New-DialogResultAction -Action "Back"
+    }
+    if ($oDialogResult.Action -ne "Validate") {
+        return $null
+    }
+
+    $hFormValues = $oDialogResult.DialogResult.Form.GetValue($true)
+    $hCertObject = [ordered]@{}
+    foreach ($k in $hCertProps.Keys) {
+        $hCertObject[$k] = $hFormValues[$k]
+    }
+
+    $aSANLines = $hFormValues[$sSANTextBoxName].Split("`n") |
+        ForEach-Object { $_.Trim() } |
+        Where-Object { $_.Length -gt 0 }
+    $aDNS = @()
+    $aIP = @()
+    foreach ($sLine in $aSANLines) {
+        if ($sLine -match $sIPRegex) {
+            $aIP += $sLine
+        } elseif ($sLine -match $sDNSRegex) {
+            $aDNS += $sLine
+        }
+    }
+
+    $sCN = $hCertObject.CommonName
+    if ($sCN -and ($aDNS -notcontains $sCN)) {
+        $sAnswer = Invoke-YesNoCLIDialog -Message "The Common Name of the certificate ($sCN) should be in subject alternative names" `
+                                         -Vertical -YN -YesButtonText "Include in DNS SAN" `
+                                         -NoButtonText "Do not include in SAN"
+        if ($sAnswer -eq "Yes") { $aDNS += $sCN }
+    }
+
+    $hSAN = @{}
+    if ($aDNS.Count -gt 0) { $hSAN.SANdns = $aDNS }
+    if ($aIP.Count -gt 0) { $hSAN.SANipaddress = $aIP }
+
+    return @{
+        CertificateObject = $hCertObject
+        SAN = $hSAN
+    }
+}
+
+function Import-CertToFormValues {
+    $oDialogResult = Read-CLIDialogValidatedValue `
+        -Header "Enter a certificate file path, an HTTPS URL, or a host[:port] to import" `
+        -PropertyName "Path / URL / Host" `
+        -ValidationMethod { param($v) return ($v.Trim().Length -gt 0) } `
+        -ErrorMessage "Value cannot be empty" `
+        -AllowCancel
+
+    if ($null -eq $oDialogResult) { return $null }
+    if ($oDialogResult.PSTypeNames -and $oDialogResult.PSTypeNames[0] -like "DialogResult.Action.*") {
+        return $oDialogResult
+    }
+    $sInput = if ($oDialogResult.PSTypeNames -and $oDialogResult.PSTypeNames[0] -eq "DialogResult.Value") {
+        $oDialogResult.Value
+    } else {
+        [string]$oDialogResult
+    }
+    $sInput = $sInput.Trim().Trim('"').Trim("'")
+
+    $sHttpsUrlRegex = '^https://.+'
+    $sHostPortRegex = Get-HostPortRegex -FullLine
+
+    $oCert = $null
+    try {
+        if ($sInput -match $sHttpsUrlRegex) {
+            Write-Host "Fetching certificate from $sInput ..." -ForegroundColor Cyan
+            $oCert = Get-CertificateFromUrl -Url $sInput
+        } elseif (Test-Path -LiteralPath $sInput -PathType Leaf) {
+            $oCert = Get-CertificateFromFile -Path $sInput
+        } elseif ($sInput -match $sHostPortRegex) {
+            $sUrl = "https://$sInput"
+            Write-Host "Fetching certificate from $sUrl ..." -ForegroundColor Cyan
+            $oCert = Get-CertificateFromUrl -Url $sUrl
+        } else {
+            $oCert = Get-CertificateFromFile -Path $sInput
+        }
+    } catch {
+        Write-Host "Failed to load certificate: $_" -ForegroundColor Red
+        return $null
+    }
+    if (-not $oCert) { return $null }
+
+    Write-Host "Imported certificate subject: $($oCert.Subject)" -ForegroundColor Green
+
+    $hDN = ConvertFrom-X500DistinguishedName -DistinguishedName $oCert.Subject
+    $hCertObj = [ordered]@{
+        CommonName         = if ($hDN.Contains("CN")) { $hDN.CN } else { "" }
+        Organisation       = if ($hDN.Contains("O"))  { $hDN.O }  else { "" }
+        OrganisationalUnit = if ($hDN.Contains("OU")) { $hDN.OU } else { "" }
+        Locality           = if ($hDN.Contains("L"))  { $hDN.L }  else { "" }
+        State              = if ($hDN.Contains("S"))  { $hDN.S }  elseif ($hDN.Contains("ST")) { $hDN.ST } else { "" }
+        CountryCode        = if ($hDN.Contains("C"))  { $hDN.C }  else { "" }
+    }
+
+    $hSANByType = Get-CertificateSAN -Certificate $oCert
+    $hSAN = @{}
+    if ($hSANByType.Contains("DNS_NAME") -and $hSANByType.DNS_NAME.Count -gt 0) {
+        $hSAN.SANdns = @($hSANByType.DNS_NAME)
+    }
+    if ($hSANByType.Contains("IP_ADDRESS") -and $hSANByType.IP_ADDRESS.Count -gt 0) {
+        $hSAN.SANipaddress = @($hSANByType.IP_ADDRESS)
+    }
+
+    return @{
+        CertAndSAN = @{
+            CertificateObject = $hCertObj
+            SAN = $hSAN
+        }
+    }
+}
+
 function Read-CSR {
     Param(
-        [switch]$ItemsMode
+        [switch]$ItemsMode,
+        [hashtable]$InitialValues
     )
-    $sbCertificateObject = if ($ItemsMode) {
-        {
+    $aCertAndSANSteps = @(if ($ItemsMode) {
+        New-CLIDialogWizardStep -PropertyName "CertAndSAN" -ScriptBlock {
             param($result)
-            $sFreeStringRegex = "^$|^[0-9a-zA-Zéèàùêëîï _.-]+$"
-            $hPrevious = $result.CertificateObject
-            $hCertProps = [ordered]@{
-                CommonName = @{regex = "^[0-9a-zA-Z ._*-]+$"; Text = $hPrevious.CommonName}
-                Organisation = @{regex = $sFreeStringRegex; Text = $hPrevious.Organisation}
-                OrganisationalUnit = @{regex = $sFreeStringRegex; Text = $hPrevious.OrganisationalUnit}
-                Locality = @{regex = $sFreeStringRegex; Text = $hPrevious.Locality}
-                State = @{regex = $sFreeStringRegex; Text = $hPrevious.State}
-                CountryCode = @{regex = "^$|^..$"; Text = $hPrevious.CountryCode}
-            }
-            return Read-CLIDialogHashtable -Properties $hCertProps -AllowBack
+            return Read-CertObjectAndSAN -PreviousValues $result.CertAndSAN -AllowBack
         }
     } else {
-        {
+        New-CLIDialogWizardStep -PropertyName "CertificateObject" -ScriptBlock {
             param($result)
             $sPreviousDN = if ($result.CertificateObject) { $result.CertificateObject.Subject } else { "" }
             $oResult = Read-CLIDialogDN -Header "Please enter certificate object as DN format" -AllowBack -DefaultValue $sPreviousDN
@@ -405,14 +590,13 @@ function Read-CSR {
             }
             return [ordered]@{Subject = $oResult}
         }
-    }
-    $steps = @(
-        New-CLIDialogWizardStep -PropertyName "CertificateObject" -ScriptBlock $sbCertificateObject
         New-CLIDialogWizardStep -PropertyName "SAN" -ScriptBlock {
             param($result)
             $hPreviousSAN = if ($result.SAN -and ($result.SAN.SANdns -or $result.SAN.SANipaddress)) { $result.SAN } else { $null }
             return Read-SAN -CommonName $result.CertificateObject.CommonName -AskForValidation -AllowBack -PreviousValues $hPreviousSAN
         }
+    })
+    $steps = $aCertAndSANSteps + @(
         New-CLIDialogWizardStep -PropertyName "CA" -ScriptBlock {
             param($result)
             $sDefaultCA = if ($result.CA -and $result.CA.PSObject.TypeNames[0] -eq "ADcertificationAuthority") { $result.CA.Name } else { "" }
@@ -441,12 +625,20 @@ function Read-CSR {
         }
         New-CLIDialogWizardStep -PropertyName "FileNames" -ScriptBlock {
             param($result)
-            $sPreviousName = if ($result.FileNames) { $result.FileNames.FriendlyName } else { "" }
+            $sPreviousName = if ($result.FileNames -and $result.FileNames.FriendlyName) {
+                $result.FileNames.FriendlyName
+            } elseif ($result.CertAndSAN -and $result.CertAndSAN.CertificateObject.CommonName) {
+                $result.CertAndSAN.CertificateObject.CommonName
+            } elseif ($result.CertificateObject -and $result.CertificateObject.Subject -match "CN=([^,]+)") {
+                $matches[1]
+            } else {
+                ""
+            }
             return Read-FileNames -DefaultFriendlyName $sPreviousName -AllowBack
         }
     )
 
-    $oWizardResult = Invoke-CLIDialogWizard -Steps $steps
+    $oWizardResult = Invoke-CLIDialogWizard -Steps $steps -InitialObject $InitialValues
 
     # Handle Back/Exit
     if ($oWizardResult.PSTypeNames -and $oWizardResult.PSTypeNames[0] -like "DialogResult.Action.*") {
@@ -455,8 +647,13 @@ function Read-CSR {
 
     # Build the CSR hashtable from wizard results
     $hCSR = @{}
-    $hCSR += $oWizardResult.CertificateObject
-    $hCSR += $oWizardResult.SAN
+    if ($ItemsMode) {
+        $hCSR += $oWizardResult.CertAndSAN.CertificateObject
+        $hCSR += $oWizardResult.CertAndSAN.SAN
+    } else {
+        $hCSR += $oWizardResult.CertificateObject
+        $hCSR += $oWizardResult.SAN
+    }
     if ($oWizardResult.Template.Count -gt 0) {
         $hCSR += $oWizardResult.Template
     }
@@ -485,9 +682,10 @@ function Read-CSR {
 function New-CSR_CLI {
     Param(
         [string]$OpenSSLPath,
-        [switch]$ItemsMode
+        [switch]$ItemsMode,
+        [hashtable]$InitialValues
     )
-    $oCSR = Read-CSR -ItemsMode:$ItemsMode
+    $oCSR = Read-CSR -ItemsMode:$ItemsMode -InitialValues $InitialValues
     if ($oCSR.PSObject.TypeNames[0] -eq "DialogResult.Action.Back") {
         return $oCSR
     }
@@ -776,9 +974,10 @@ function New-PFX_CLI {
 function New-PKISignedCertAndPFX_CLI {
     Param(
         [string]$OpenSSLPath,
-        [switch]$ItemsMode
+        [switch]$ItemsMode,
+        [hashtable]$InitialValues
     )
-    $oCSR = New-CSR_CLI -OpenSSLPath $OpenSSLPath -ItemsMode:$ItemsMode
+    $oCSR = New-CSR_CLI -OpenSSLPath $OpenSSLPath -ItemsMode:$ItemsMode -InitialValues $InitialValues
     if ($oCSR.PSObject.TypeNames[0] -eq "DialogResult.Action.Back") {
         return $oCSR
     }
@@ -812,6 +1011,21 @@ function New-PKISignedCertAndPFX_CLI {
         Write-Host "CSR submission failed" -ForegroundColor Red
         Write-Host "Reason:"
         Write-Host $oSubmittedCSR.Result.Output
+    }
+}
+
+function Invoke-ImportCertFlow_CLI {
+    Param(
+        [string]$OpenSSLPath
+    )
+    while ($true) {
+        $oImported = Import-CertToFormValues
+        if ($null -eq $oImported) { return }
+        if ($oImported.PSTypeNames -and $oImported.PSTypeNames[0] -like "DialogResult.Action.*") { return }
+        $oResult = New-PKISignedCertAndPFX_CLI -OpenSSLPath $OpenSSLPath -ItemsMode -InitialValues $oImported
+        if (-not ($oResult -and $oResult.PSTypeNames -and $oResult.PSTypeNames[0] -eq "DialogResult.Action.Back")) {
+            return
+        }
     }
 }
 
@@ -862,6 +1076,7 @@ $Menu = New-Menu -Text "What do you want to do?" -Content @(
     New-Menu -Text "&Create CSR, Sign with PKI and create PFX" -Content @(
         New-MenuItem -Text "Ask for &items (recommended)" -Content { New-PKISignedCertAndPFX_CLI -OpenSSLPath $OpenSSLPath -ItemsMode | Out-Null } -Recommended
         New-MenuItem -Text "Full Object &DN" -Content { New-PKISignedCertAndPFX_CLI -OpenSSLPath $OpenSSLPath | Out-Null }
+        New-MenuItem -Text "I&mport from existing certificate" -Content { Invoke-ImportCertFlow_CLI -OpenSSLPath $OpenSSLPath | Out-Null }
     ) -OtherMenuItems $aOtherMenuItems -SeparatorColor Blue
     New-Menu -Text "&Advanced certificate generation" -Content @(
         New-MenuItem -Text "New Certificate Request (items)" -Content { New-CSR_CLI -OpenSSLPath $OpenSSLPath -ItemsMode | Out-Null }

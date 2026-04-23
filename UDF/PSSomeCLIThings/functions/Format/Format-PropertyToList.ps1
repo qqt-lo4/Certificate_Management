@@ -47,14 +47,20 @@ function Format-PropertyToList {
 
     .NOTES
         Author  : Loïc Ade
-        Version : 1.0.0
+        Version : 1.1.0
+
+        1.1.0 - 2026-04-19 - Loïc Ade
+            - PropertyColor default now resolves from the current CLI dialog theme (Get-CLIDialogTheme)
+
+        1.0.0 - 2026-02-23 - Loïc Ade
+            - Initial release
     #>
     Param(
         [Parameter(Mandatory)]
         [string]$Property,
         [Parameter(Mandatory)]
         [Object[]]$Value,
-        [System.ConsoleColor]$PropertyColor = ([System.ConsoleColor]::Green),
+        [System.ConsoleColor]$PropertyColor = (Get-CLIDialogTheme "HeaderForegroundColor"),
         [ValidateSet("Left", "Right")]
         [string]$PropertyAlign = "Left",
         [System.ConsoleColor]$ValueColor,

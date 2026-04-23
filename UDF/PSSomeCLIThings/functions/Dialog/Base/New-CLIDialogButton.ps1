@@ -158,7 +158,7 @@
 
     .NOTES
         Author: Loïc Ade
-        Version: 1.1.0
+        Version: 1.2.0
 
         This function is part of the CLI Dialog framework. Buttons are the primary interactive
         element for user actions and selections in dialogs.
@@ -194,6 +194,9 @@
 
         CHANGELOG:
 
+        Version 1.2.0 - 2026-04-18 - Loïc Ade
+            - Added Edit action type
+
         Version 1.1.0 - 2026-04-03 - Loïc Ade
             - Added theme support via Get-CLIDialogTheme for default colors
 
@@ -223,6 +226,11 @@
         [Parameter(Mandatory, ParameterSetName = "Other", Position = 0)]
         [Parameter(Mandatory, ParameterSetName = "DoNotSelect", Position = 0)]
         [Parameter(Mandatory, ParameterSetName = "GoTo", Position = 0)]
+        [Parameter(Mandatory, ParameterSetName = "Add", Position = 0)]
+        [Parameter(Mandatory, ParameterSetName = "Remove", Position = 0)]
+        [Parameter(Mandatory, ParameterSetName = "MoveUp", Position = 0)]
+        [Parameter(Mandatory, ParameterSetName = "MoveDown", Position = 0)]
+        [Parameter(Mandatory, ParameterSetName = "Edit", Position = 0)]
         [string]$Text,
         [Parameter(Position = 1)]
         [System.ConsoleKey]$Keyboard,
@@ -250,6 +258,16 @@
         [switch]$DoNotSelect,
         [Parameter(ParameterSetName = "GoTo")]
         [switch]$GoTo,
+        [Parameter(ParameterSetName = "Add")]
+        [switch]$Add,
+        [Parameter(ParameterSetName = "Remove")]
+        [switch]$Remove,
+        [Parameter(ParameterSetName = "MoveUp")]
+        [switch]$MoveUp,
+        [Parameter(ParameterSetName = "MoveDown")]
+        [switch]$MoveDown,
+        [Parameter(ParameterSetName = "Edit")]
+        [switch]$Edit,
         [System.ConsoleColor]$BackgroundColor = (Get-CLIDialogTheme "BackgroundColor"),
         [System.ConsoleColor]$ForegroundColor = (Get-CLIDialogTheme "ForegroundColor"),
         [System.ConsoleColor]$FocusedBackgroundColor = (Get-CLIDialogTheme "FocusedBackgroundColor"),

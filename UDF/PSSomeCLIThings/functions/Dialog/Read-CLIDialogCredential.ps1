@@ -123,12 +123,8 @@ function Read-CLIDialogCredential {
         Customizes the prompt message and adds a Cancel button.
 
     .NOTES
-        Module: CLIDialog
         Author: Loïc Ade
-        Created: 2025-10-01
-        Modified: 2025-10-23
-        Version: 3.0.0
-        Dependencies: Read-CLIDialogConnectionInfo
+        Version: 3.1.0
 
         This function is a simplified wrapper around Read-CLIDialogConnectionInfo that
         only requests credential fields (username and password). For more complex scenarios
@@ -169,6 +165,10 @@ function Read-CLIDialogCredential {
 
         CHANGELOG:
 
+        Version 3.1.0 - 2026-04-18 - Loïc Ade
+            - Color parameter defaults now resolve from the current CLI dialog theme (Get-CLIDialogTheme)
+            - Corrected a bug when Back button was returned
+
         Version 3.0.0 - 2026-03-21 - Loïc Ade
             - Added AllowCancel alias for AddCancel parameter
             - Added AddBack/AllowBack parameter for Back button support
@@ -202,19 +202,19 @@ function Read-CLIDialogCredential {
         [string]$EnterCredQuestion = "Please enter informations to connect to%a:",
         [string]$ReuseCredQuestion = "Credentials are already in the `$Credential variable. Do you want to keem them?",
         [string]$PreviousUsername,
-        [System.ConsoleColor]$QuestionForegroundColor = (Get-Host).UI.RawUI.ForegroundColor,
-        [System.ConsoleColor]$TextForegroundColor = (Get-Host).UI.RawUI.ForegroundColor,
-        [System.ConsoleColor]$TextBackgroundColor = (Get-Host).UI.RawUI.BackgroundColor,
-        [System.ConsoleColor]$HeaderForegroundColor = [System.ConsoleColor]::Green,
-        [System.ConsoleColor]$HeaderBackgroundColor = (Get-Host).UI.RawUI.BackgroundColor,
-        [System.ConsoleColor]$FocusedTextForegroundColor = (Get-Host).UI.RawUI.ForegroundColor,
-        [System.ConsoleColor]$FocusedTextBackgroundColor = (Get-Host).UI.RawUI.BackgroundColor,
-        [System.ConsoleColor]$FocusedHeaderForegroundColor = [System.ConsoleColor]::Blue,
-        [System.ConsoleColor]$FocusedHeaderBackgroundColor = (Get-Host).UI.RawUI.BackgroundColor,
-        [System.ConsoleColor]$ButtonBackgroundColor = (Get-Host).UI.RawUI.BackgroundColor,
-        [System.ConsoleColor]$ButtonForegroundColor = (Get-Host).UI.RawUI.ForegroundColor,
-        [System.ConsoleColor]$FocusedButtonBackgroundColor = (Get-Host).UI.RawUI.ForegroundColor,
-        [System.ConsoleColor]$FocusedButtonForegroundColor = (Get-Host).UI.RawUI.BackgroundColor,
+        [System.ConsoleColor]$QuestionForegroundColor = (Get-CLIDialogTheme "ForegroundColor"),
+        [System.ConsoleColor]$TextForegroundColor = (Get-CLIDialogTheme "ForegroundColor"),
+        [System.ConsoleColor]$TextBackgroundColor = (Get-CLIDialogTheme "BackgroundColor"),
+        [System.ConsoleColor]$HeaderForegroundColor = (Get-CLIDialogTheme "HeaderForegroundColor"),
+        [System.ConsoleColor]$HeaderBackgroundColor = (Get-CLIDialogTheme "HeaderBackgroundColor"),
+        [System.ConsoleColor]$FocusedTextForegroundColor = (Get-CLIDialogTheme "ForegroundColor"),
+        [System.ConsoleColor]$FocusedTextBackgroundColor = (Get-CLIDialogTheme "BackgroundColor"),
+        [System.ConsoleColor]$FocusedHeaderForegroundColor = (Get-CLIDialogTheme "FocusedHeaderForegroundColor"),
+        [System.ConsoleColor]$FocusedHeaderBackgroundColor = (Get-CLIDialogTheme "FocusedHeaderBackgroundColor"),
+        [System.ConsoleColor]$ButtonBackgroundColor = (Get-CLIDialogTheme "BackgroundColor"),
+        [System.ConsoleColor]$ButtonForegroundColor = (Get-CLIDialogTheme "ForegroundColor"),
+        [System.ConsoleColor]$FocusedButtonBackgroundColor = (Get-CLIDialogTheme "FocusedBackgroundColor"),
+        [System.ConsoleColor]$FocusedButtonForegroundColor = (Get-CLIDialogTheme "FocusedForegroundColor"),
         [string]$Prefix = "  ",
         [string]$FocusedPrefix = "> ",
         [Alias("AllowCancel")]
@@ -269,7 +269,7 @@ function Read-CLIDialogCredential {
     $oResult = Read-CLIDialogConnectionInfo @hParams
 
     # If ReturnDialogResult and result is a DialogResult action, pass it through
-    if ($oResult -and $oResult.PSTypeNames -and $oResult.PSTypeNames[0] -like "DialogResult.Action.*") {
+    if ($oResult -and $oResult.psobject.TypeNames[0] -like "DialogResult.Action.*") {
         return $oResult
     }
 

@@ -70,11 +70,8 @@ function Set-StringUnderline {
         Creates an underlined keyboard shortcut by underlining the first character.
 
     .NOTES
-        Module: CLIDialog
         Author: Loïc Ade
-        Created: 2025-10-20
         Version: 1.0.0
-        Dependencies: Set-StringFormat
 
         This function is a convenience wrapper around Set-StringFormat. It simplifies common
         underline operations by eliminating the need to specify the -Underline switch.

@@ -1,4 +1,3 @@
-
 function Convert-StringArrayToHashtable {
     <#
     .SYNOPSIS

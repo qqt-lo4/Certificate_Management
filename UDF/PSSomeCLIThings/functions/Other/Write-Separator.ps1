@@ -45,7 +45,13 @@ function Write-Separator {
 
     .NOTES
         Author  : Loïc Ade
-        Version : 1.0.0
+        Version : 1.1.0
+
+        1.1.0 - 2026-04-19 - Loïc Ade
+            - ForegroundColor default now resolves from the current CLI dialog theme (Get-CLIDialogTheme)
+            
+        1.0.0 - 2026-02-23 - Loïc Ade
+            - Initial release
     #>
     Param(
         [string]$Char,
@@ -55,7 +61,7 @@ function Write-Separator {
         [ValidateScript({$_ -ge 0})]
         [int]$PageCount = 0,
         [switch]$ReturnString,
-        [System.ConsoleColor]$ForegroundColor = (Get-Host).UI.RawUI.ForegroundColor
+        [System.ConsoleColor]$ForegroundColor = (Get-CLIDialogTheme "SeparatorColor")
     )
     if ($PageCount -eq 0) {
         $sFullLine = $Char * $Length

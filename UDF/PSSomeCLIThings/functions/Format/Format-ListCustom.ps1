@@ -44,14 +44,20 @@ function Format-ListCustom {
 
     .NOTES
         Author  : Loïc Ade
-        Version : 1.0.0
+        Version : 1.1.0
+
+        1.1.0 - 2026-04-19 - Loïc Ade
+            - PropertiesColor default now resolves from the current CLI dialog theme (Get-CLIDialogTheme)
+
+        1.0.0 - 2026-02-23 - Loïc Ade
+            - Initial release
     #>
     param (
         [Parameter(ValueFromPipeline = $true)]
         [Object]$InputObject,
         [Switch]$Sort,
         [Switch]$Descending,
-        [System.ConsoleColor]$PropertiesColor = ([System.ConsoleColor]::Green),
+        [System.ConsoleColor]$PropertiesColor = (Get-CLIDialogTheme "HeaderForegroundColor"),
         [ValidateSet("Left", "Right")]
         [string]$PropertyAlign = "Left",
         [object[]]$PropertiesValuesToColor

@@ -44,131 +44,151 @@ function Select-LineRange {
 
     .NOTES
         Author  : Loïc Ade
-        Version : 1.0.0
+        Version : 1.1.0
+
+        1.1.0 - 2026-04-20 - Loïc Ade
+            - Added pipeline support (ValueFromPipeline on InputArray)
+
+        1.0.0 
+            - Initial version
     #>
     
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory = $true)]
+        [Parameter(Mandatory = $true, ValueFromPipeline = $true)]
         [AllowEmptyString()]
         [string[]]$InputArray,
-        
+
         [Parameter(Mandatory = $false)]
         [switch]$FromEnd,
-        
+
         [Parameter(Mandatory = $false)]
         [string]$StartRegex = "",
-        
+
         [Parameter(Mandatory = $false)]
         [string]$EndRegex = "",
-        
+
         [Parameter(Mandatory = $false)]
         [bool]$IncludeStartLine = $true,
-        
+
         [Parameter(Mandatory = $false)]
         [bool]$IncludeEndLine = $true
     )
-    
-    # Validation des paramètres
-    if ([string]::IsNullOrWhiteSpace($StartRegex) -and [string]::IsNullOrWhiteSpace($EndRegex)) {
-        throw "Au moins une des deux regex (StartRegex ou EndRegex) doit être renseignée"
+
+    Begin {
+        $aAccumulated = [System.Collections.Generic.List[string]]::new()
     }
-    
-    if ($InputArray.Count -eq 0) {
-        Write-Warning "Le tableau d'entrée est vide"
-        return @()
-    }
-    
-    # Déterminer l'index de début
-    $startIndex = 0
-    
-    if (-not [string]::IsNullOrWhiteSpace($StartRegex)) {
-        if ($FromEnd) {
-            # Parcours depuis la fin pour StartRegex
-            for ($i = $InputArray.Count - 1; $i -ge 0; $i--) {
-                if ($InputArray[$i] -match $StartRegex) {
-                    $startIndex = $i
-                    if (-not $IncludeStartLine) {
-                        $startIndex++
-                    }
-                    break
-                }
-            }
-            
-            # Si aucune ligne ne correspond à StartRegex
-            if ($i -lt 0) {
-                Write-Warning "Aucune ligne ne correspond à la regex de début: '$StartRegex'"
-                return @()
-            }
-        } else {
-            # Parcours normal depuis le début pour StartRegex
-            for ($i = 0; $i -lt $InputArray.Count; $i++) {
-                if ($InputArray[$i] -match $StartRegex) {
-                    $startIndex = $i
-                    if (-not $IncludeStartLine) {
-                        $startIndex++
-                    }
-                    break
-                }
-            }
-            
-            # Si aucune ligne ne correspond à StartRegex
-            if ($i -eq $InputArray.Count) {
-                Write-Warning "Aucune ligne ne correspond à la regex de début: '$StartRegex'"
-                return @()
-            }
+
+    Process {
+        foreach ($sLine in $InputArray) {
+            $aAccumulated.Add($sLine)
         }
     }
-    
-    # Chercher l'index de fin
-    $endIndex = $InputArray.Count - 1  # Par défaut, jusqu'à la fin
-    
-    if (-not [string]::IsNullOrWhiteSpace($EndRegex)) {
-        $foundEnd = $false
-        if ($FromEnd) {
-            # Parcours depuis la fin pour EndRegex
-            for ($i = $InputArray.Count - 1; $i -ge $startIndex; $i--) {
-                if ($InputArray[$i] -match $EndRegex) {
-                    $endIndex = $i
-                    if (-not $IncludeEndLine) {
-                        $endIndex--
-                    }
-                    $foundEnd = $true
-                    break
-                }
-            }
-        } else {
-            # Parcours normal depuis startIndex pour EndRegex
-            for ($i = $startIndex; $i -lt $InputArray.Count; $i++) {
-                if ($InputArray[$i] -match $EndRegex) {
-                    $endIndex = $i
-                    if (-not $IncludeEndLine) {
-                        $endIndex--
-                    }
-                    $foundEnd = $true
-                    break
-                }
-            }
+
+    End {
+        $InputArray = $aAccumulated.ToArray()
+
+        # Parameter validation
+        if ([string]::IsNullOrWhiteSpace($StartRegex) -and [string]::IsNullOrWhiteSpace($EndRegex)) {
+            throw "At least one of StartRegex or EndRegex must be provided"
         }
-        
-        # Si aucune ligne ne correspond à EndRegex
-        if (-not $foundEnd) {
-            Write-Warning "Aucune ligne ne correspond à la regex de fin: '$EndRegex'"
+
+        if ($InputArray.Count -eq 0) {
+            Write-Warning "Input array is empty"
             return @()
         }
+
+        # Determine start index
+        $startIndex = 0
+
+        if (-not [string]::IsNullOrWhiteSpace($StartRegex)) {
+            if ($FromEnd) {
+                # Search from the end for StartRegex
+                for ($i = $InputArray.Count - 1; $i -ge 0; $i--) {
+                    if ($InputArray[$i] -match $StartRegex) {
+                        $startIndex = $i
+                        if (-not $IncludeStartLine) {
+                            $startIndex++
+                        }
+                        break
+                    }
+                }
+
+                # No line matched StartRegex
+                if ($i -lt 0) {
+                    Write-Warning "No line matches the start regex: '$StartRegex'"
+                    return @()
+                }
+            } else {
+                # Normal search from the start for StartRegex
+                for ($i = 0; $i -lt $InputArray.Count; $i++) {
+                    if ($InputArray[$i] -match $StartRegex) {
+                        $startIndex = $i
+                        if (-not $IncludeStartLine) {
+                            $startIndex++
+                        }
+                        break
+                    }
+                }
+
+                # No line matched StartRegex
+                if ($i -eq $InputArray.Count) {
+                    Write-Warning "No line matches the start regex: '$StartRegex'"
+                    return @()
+                }
+            }
+        }
+
+        # Determine end index
+        $endIndex = $InputArray.Count - 1  # Defaults to the last line
+
+        if (-not [string]::IsNullOrWhiteSpace($EndRegex)) {
+            $foundEnd = $false
+            if ($FromEnd) {
+                # Search from the end for EndRegex
+                for ($i = $InputArray.Count - 1; $i -ge $startIndex; $i--) {
+                    if ($InputArray[$i] -match $EndRegex) {
+                        $endIndex = $i
+                        if (-not $IncludeEndLine) {
+                            $endIndex--
+                        }
+                        $foundEnd = $true
+                        break
+                    }
+                }
+            } else {
+                # Normal search from startIndex for EndRegex
+                for ($i = $startIndex; $i -lt $InputArray.Count; $i++) {
+                    if ($InputArray[$i] -match $EndRegex) {
+                        $endIndex = $i
+                        if (-not $IncludeEndLine) {
+                            $endIndex--
+                        }
+                        $foundEnd = $true
+                        break
+                    }
+                }
+            }
+
+            # No line matched EndRegex
+            if (-not $foundEnd) {
+                Write-Warning "No line matches the end regex: '$EndRegex'"
+                return @()
+            }
+        }
+
+        # Index validation
+        if ($startIndex -gt $endIndex) {
+            Write-Warning "Start index ($startIndex) is greater than end index ($endIndex)"
+            return @()
+        }
+
+        # Extract the lines
+        $result = @()
+        for ($i = $startIndex; $i -le $endIndex; $i++) {
+            $result += $InputArray[$i]
+        }
+
+        return $result
     }
-    
-    # Validation des index
-    if ($startIndex -gt $endIndex) {
-        Write-Warning "L'index de début ($startIndex) est supérieur à l'index de fin ($endIndex)"
-        return @()
-    }
-    
-    # Extraire les lignes
-    $result = @()
-    for ($i = $startIndex; $i -le $endIndex; $i++) {
-        $result += $InputArray[$i]
-    }
-    
-    return $result
 }

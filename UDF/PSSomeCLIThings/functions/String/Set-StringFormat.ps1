@@ -87,11 +87,8 @@ function Set-StringFormat {
         Highlights the "Error:" prefix in bold.
 
     .NOTES
-        Module: CLIDialog
         Author: Loïc Ade
-        Created: 2025-10-20
         Version: 1.0.0
-        Dependencies: None
 
         This function is part of the CLI String utilities and is commonly used with CLI Dialog
         framework for highlighting specific parts of text.

@@ -156,11 +156,8 @@ function Read-CLIDialogConnectionInfo {
         Returns connection info as hashtable with ConnectionInfo PSTypeName.
 
     .NOTES
-        Module: CLIDialog
         Author: Loïc Ade
-        Modified: 2025-11-22
-        Version: 2.0.0
-        Dependencies: New-CLIDialogText, New-CLIDialogTextBox, New-CLIDialogSpace, New-CLIDialogButton, New-CLIDialogObjectsRow, New-CLIDialog, Invoke-CLIDialog, Invoke-YesNoCLIDialog, Set-StringUnderline
+        Version: 2.1.0
 
         This function is designed for applications that need to collect connection parameters
         interactively from users, particularly for remote server connections, database connections,
@@ -231,6 +228,9 @@ function Read-CLIDialogConnectionInfo {
 
         CHANGELOG:
 
+        Version 2.1.0 - 2026-04-18 - Loïc Ade
+            - Color parameter defaults now resolve from the current CLI dialog theme (Get-CLIDialogTheme)
+
         Version 2.0.0 - 2026-03-21 - Loïc Ade
             - BREAKING: Cancel button is no longer shown by default, use -AddCancel/-AllowCancel to display it
             - Added AddCancel/AllowCancel parameter to conditionally show Cancel button
@@ -263,19 +263,19 @@ function Read-CLIDialogConnectionInfo {
         [string]$UsernameRegex = "(?<user>[\p{L}\p{Pc}\p{Pd}\p{Nd} ]+)",
         [string]$EnterInfoQuestion = "Please enter informations to connect to%a:",
         [string]$HeaderAppName = "",
-        [System.ConsoleColor]$QuestionForegroundColor = (Get-Host).UI.RawUI.ForegroundColor,
-        [System.ConsoleColor]$TextForegroundColor = (Get-Host).UI.RawUI.ForegroundColor,
-        [System.ConsoleColor]$TextBackgroundColor = (Get-Host).UI.RawUI.BackgroundColor,
-        [System.ConsoleColor]$HeaderForegroundColor = [System.ConsoleColor]::Green,
-        [System.ConsoleColor]$HeaderBackgroundColor = (Get-Host).UI.RawUI.BackgroundColor,
-        [System.ConsoleColor]$FocusedTextForegroundColor = (Get-Host).UI.RawUI.ForegroundColor,
-        [System.ConsoleColor]$FocusedTextBackgroundColor = (Get-Host).UI.RawUI.BackgroundColor,
-        [System.ConsoleColor]$FocusedHeaderForegroundColor = [System.ConsoleColor]::Blue,
-        [System.ConsoleColor]$FocusedHeaderBackgroundColor = (Get-Host).UI.RawUI.BackgroundColor,
-        [System.ConsoleColor]$ButtonBackgroundColor = (Get-Host).UI.RawUI.BackgroundColor,
-        [System.ConsoleColor]$ButtonForegroundColor = (Get-Host).UI.RawUI.ForegroundColor,
-        [System.ConsoleColor]$FocusedButtonBackgroundColor = (Get-Host).UI.RawUI.ForegroundColor,
-        [System.ConsoleColor]$FocusedButtonForegroundColor = (Get-Host).UI.RawUI.BackgroundColor,
+        [System.ConsoleColor]$QuestionForegroundColor = (Get-CLIDialogTheme "ForegroundColor"),
+        [System.ConsoleColor]$TextForegroundColor = (Get-CLIDialogTheme "ForegroundColor"),
+        [System.ConsoleColor]$TextBackgroundColor = (Get-CLIDialogTheme "BackgroundColor"),
+        [System.ConsoleColor]$HeaderForegroundColor = (Get-CLIDialogTheme "HeaderForegroundColor"),
+        [System.ConsoleColor]$HeaderBackgroundColor = (Get-CLIDialogTheme "HeaderBackgroundColor"),
+        [System.ConsoleColor]$FocusedTextForegroundColor = (Get-CLIDialogTheme "ForegroundColor"),
+        [System.ConsoleColor]$FocusedTextBackgroundColor = (Get-CLIDialogTheme "BackgroundColor"),
+        [System.ConsoleColor]$FocusedHeaderForegroundColor = (Get-CLIDialogTheme "FocusedHeaderForegroundColor"),
+        [System.ConsoleColor]$FocusedHeaderBackgroundColor = (Get-CLIDialogTheme "FocusedHeaderBackgroundColor"),
+        [System.ConsoleColor]$ButtonBackgroundColor = (Get-CLIDialogTheme "BackgroundColor"),
+        [System.ConsoleColor]$ButtonForegroundColor = (Get-CLIDialogTheme "ForegroundColor"),
+        [System.ConsoleColor]$FocusedButtonBackgroundColor = (Get-CLIDialogTheme "FocusedBackgroundColor"),
+        [System.ConsoleColor]$FocusedButtonForegroundColor = (Get-CLIDialogTheme "FocusedForegroundColor"),
         [string]$Prefix = "  ",
         [string]$FocusedPrefix = "> ",
         [Parameter(ParameterSetName = "Manual")]
@@ -481,9 +481,10 @@ function Read-CLIDialogConnectionInfo {
             $oDialogResult = Invoke-CLIDialog -InputObject $oDialog -Validate -ErrorDetails -PauseAfterErrorMessage
             if ($oDialogResult.PSTypeNames[0] -like "DialogResult.Action.*" -and $oDialogResult.PSTypeNames[0] -ne "DialogResult.Action.Validate") {
                 if ($ReturnDialogResult) {
-                    return $oDialogResult
+                    $oResult = $oDialogResult
+                } else {
+                    $oResult = $null
                 }
-                $oResult = $null
             } else {
                 $hResult = $oDialogResult.DialogResult.Form.GetValue()
                 $oResult = if ($AsHashtable.IsPresent) {
@@ -497,6 +498,8 @@ function Read-CLIDialogConnectionInfo {
     End {
         if ($null -eq $oResult) {
             return $null
+        } elseif ($oResult.psobject.TypeNames[0] -like "DialogResult.Action.*") {
+            return $oResult
         } else {
             $oResult.psobject.TypeNames.Insert(0, "ConnectionInfo")
             if ($oResult.Username -and $oResult.Password) {
