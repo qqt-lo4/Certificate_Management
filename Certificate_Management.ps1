@@ -710,10 +710,14 @@ function New-CSR_CLI {
 function Select-CertFolder {
     Param(
         [Parameter(Mandatory, Position = 0)]
-        [string]$Message
+        [string]$Message,
+        [switch]$AllowBack
     )
     $sWorkingDir = (Get-ScriptDir -WorkingDir)
-    $oFolder = Select-CLIFileFromFolder -Path $sWorkingDir -Filter "*" -ColumnName "Name" -SeparatorColor Blue -SelectHeaderMessage $Message
+    $oFolder = Select-CLIFileFromFolder -Path $sWorkingDir -Filter "*" -ColumnName "Name" -SeparatorColor Blue -SelectHeaderMessage $Message -AllowBack:$AllowBack
+    if ($oFolder.PSTypeNames -and $oFolder.PSTypeNames[0] -like "DialogResult.Action.*") {
+        return $oFolder
+    }
     return $oFolder.Value.FullName
 }
 
@@ -724,10 +728,11 @@ function Send-CSRToCA_CLI {
         [object]$CSRMoreInfo
     )
     $sCertFolder = if ($CertFolder) {
-        $CertFolder   
+        $CertFolder
     } else {
-        Select-CertFolder -Message "Which CSR do you want to send to CA?"
+        Select-CertFolder -Message "Which CSR do you want to send to CA?" -AllowBack
     }
+    if ($sCertFolder.PSTypeNames -and $sCertFolder.PSTypeNames[0] -like "DialogResult.Action.*") { return }
     $oCertInfo = if ($CSRConfig -and $CSRMoreInfo) { $null } else { Get-CertInfo -CertFolder $sCertFolder }
     $hCSRConfig = if ($CSRConfig) { $CSRConfig } elseif ($oCertInfo) { $oCertInfo.CSR } else { $null }
     $hCSRMoreInfo = if ($CSRMoreInfo) { $CSRMoreInfo } elseif ($oCertInfo) { $oCertInfo.MoreInfo } else { $null }
@@ -778,8 +783,9 @@ function Invoke-IssueCSR_CLI {
     $sCertFolder = if ($CertFolder) {
         $CertFolder
     } else {
-        Select-CertFolder -Message "Which certificate do you want to issue?"
+        Select-CertFolder -Message "Which certificate do you want to issue?" -AllowBack
     }
+    if ($sCertFolder.PSTypeNames -and $sCertFolder.PSTypeNames[0] -like "DialogResult.Action.*") { return }
     $sRequestID, $sPKIServer, $sCAName = if ($RequestID -and $PKIServer -and $CAName) {
         $RequestID, $PKIServer, $CAName
     } else {
@@ -847,8 +853,9 @@ function Get-IssuedCertificate_CLI {
     $sCertFolder = if ($CertFolder) {
         $CertFolder
     } else {
-        Select-CertFolder -Message "Which certificate do you want to retreive from PKI server?"
+        Select-CertFolder -Message "Which certificate do you want to retreive from PKI server?" -AllowBack
     }
+    if ($sCertFolder.PSTypeNames -and $sCertFolder.PSTypeNames[0] -like "DialogResult.Action.*") { return }
     $oCertInfo = Get-CertInfo -CertFolder $sCertFolder
     $sRequestID, $sPKIServer, $sCAName = if ($RequestID -and $PKIServer -and $CAName) {
         $RequestID, $PKIServer, $CAName
@@ -897,8 +904,9 @@ function New-PFX_CLI {
     $sCertFolder = if ($CertFolder) {
         $CertFolder
     } else {
-        Select-CertFolder -Message "For which certificate do you want to build a PFX?"
+        Select-CertFolder -Message "For which certificate do you want to build a PFX?" -AllowBack
     }
+    if ($sCertFolder.PSTypeNames -and $sCertFolder.PSTypeNames[0] -like "DialogResult.Action.*") { return }
     $oCertInfo = Get-CertInfo -CertFolder $sCertFolder
     $sCertName = if ($oCertInfo -and $oCertInfo.MoreInfo.FriendlyName) {
         $oCertInfo.MoreInfo.FriendlyName
@@ -911,56 +919,73 @@ function New-PFX_CLI {
         Write-Error "Private key file not found: $sKeyFile"
         return
     }
-
-    $sP7BFile = $sCertFolder + "\" + $sCertName + ".p7b"
     $sOutPFXFile = $sCertFolder + "\" + $sCertName + ".pfx"
 
-    $hMergeOptions = @{
-        PrivateKey = $sKeyFile
-        OutPFXFile = $sOutPFXFile
-        OpenSSLPath = $OpenSSLPath
-        FriendlyName = if ($oCertInfo -and $oCertInfo.MoreInfo.FriendlyName) { $oCertInfo.MoreInfo.FriendlyName } else { $sCertName }
-    }
-
-    if (Test-Path $sP7BFile -PathType Leaf) {
-        # PKI mode: P7B certificate chain available
-        $sCEROut = $sCertFolder + "\" + $sCertName + ".p7b.cer"
-        Convert-P7BToCer -P7bPath $sP7BFile -OutCerFile $sCEROut -OpenSSLPath $OpenSSLPath
-        $hMergeOptions.Cert = $sCEROut
+    # Three-tier detection:
+    #   1. canonical PKI bundle <name>.p7b — sufficient on its own
+    #   2. otherwise scan the folder for any .cer/.crt files
+    #   3. otherwise ask the user for the cert files via a multi-line prompt
+    $sP7BFile = "$sCertFolder\$sCertName.p7b"
+    $aCertFiles = if (Test-Path -LiteralPath $sP7BFile -PathType Leaf) {
+        Write-Host "Using PKI bundle: $sP7BFile" -ForegroundColor Cyan
+        @($sP7BFile)
     } else {
-        # Public CA mode: separate certificate files (final, intermediate, root)
-        $aCerFiles = @(Get-ChildItem -Path $sCertFolder -Include "*.cer", "*.crt" -File | Where-Object { $_.Name -notlike "*.p7b.cer" })
-        Write-Host "No P7B found. Please specify the certificate files." -ForegroundColor Yellow
-        Write-Host "Available files in folder:" -ForegroundColor Yellow
-        foreach ($f in $aCerFiles) { Write-Host "  $($f.Name)" }
-        Write-Host ""
-        $hCertFiles = [ordered]@{
-            "Certificate" = @{ Text = if ($aCerFiles.Count -ge 1) { $aCerFiles[0].FullName } else { "" } }
-            "Intermediate CA" = @{ Text = if ($aCerFiles.Count -ge 2) { $aCerFiles[1].FullName } else { "" } }
-            "Root CA" = @{ Text = if ($aCerFiles.Count -ge 3) { $aCerFiles[2].FullName } else { "" } }
-        }
-        $oResult = Read-CLIDialogHashtable -Properties $hCertFiles -Header "Certificate files for PFX generation" -AllowCancel
-        if ($null -eq $oResult) { return }
-        $hMergeOptions.Cert = $oResult.Certificate
-        if ($oResult."Intermediate CA" -ne "") {
-            $hMergeOptions.IntermediateCA = $oResult."Intermediate CA"
-        }
-        if ($oResult."Root CA" -ne "") {
-            $hMergeOptions.RootCA = $oResult."Root CA"
+        $aFolderCertFiles = @(Get-ChildItem -Path "$sCertFolder\*" -Include "*.cer", "*.crt" -File |
+            Where-Object { $_.Name -notlike "*.p7b.cer" } |
+            ForEach-Object { $_.FullName })
+        if ($aFolderCertFiles.Count -gt 0) {
+            Write-Host "Using certificate files found in $sCertFolder :" -ForegroundColor Cyan
+            foreach ($f in $aFolderCertFiles) { Write-Host "  $f" }
+            $aFolderCertFiles
+        } else {
+            Write-Host "No certificate files found in $sCertFolder." -ForegroundColor Yellow
+            $oArr = Read-CLIDialogArray `
+                -Header "Certificate files for PFX generation" `
+                -TextBoxHeader "Path" `
+                -HintMessage "Enter one path per line. CER/CRT/P7B accepted, in any order. Surrounding quotes are stripped." `
+                -VisibleLines 6 `
+                -ValidationScript {
+                    param($line)
+                    $p = $line.Trim().Trim('"').Trim("'")
+                    return ($p.Length -gt 0 -and (Test-Path -LiteralPath $p -PathType Leaf))
+                } `
+                -AllowCancel
+            if ($null -eq $oArr -or ($oArr.PSTypeNames -and $oArr.PSTypeNames[0] -like "DialogResult.Action.*")) { return }
+            @($oArr | ForEach-Object { $_.Trim().Trim('"').Trim("'") } | Where-Object { $_.Length -gt 0 })
         }
     }
 
-    $ssKeyPassord = if ($PrivateKeyPassword) {
+    if ($aCertFiles.Count -eq 0) {
+        Write-Host "No certificate files provided. Aborting." -ForegroundColor Red
+        return
+    }
+
+    $ssKeyPassword = if ($PrivateKeyPassword) {
         $PrivateKeyPassword
     } else {
         Read-Host -AsSecureString -Prompt "Please enter private key password"
     }
     $sWindowsPFX = Invoke-YesNoCLIDialog -YN -Message "Will this PFX be used in the Windows certificate store?"
-    $hMergeOptions.PFXPassword = $ssKeyPassord
-    $hMergeOptions.KeyPassword = $ssKeyPassord
-    $hMergeOptions.WindowsPFX = ($sWindowsPFX -eq "Yes")
 
-    Merge-OpenSSLPFX @hMergeOptions
+    $hMergeOptions = @{
+        PrivateKey       = $sKeyFile
+        CertificateFiles = $aCertFiles
+        IncludeOSStore   = $true
+        OutPFXFile       = $sOutPFXFile
+        OpenSSLPath      = $OpenSSLPath
+        PFXPassword      = $ssKeyPassword
+        KeyPassword      = $ssKeyPassword
+        FriendlyName     = if ($oCertInfo -and $oCertInfo.MoreInfo.FriendlyName) { $oCertInfo.MoreInfo.FriendlyName } else { $sCertName }
+        WindowsPFX       = ($sWindowsPFX -eq "Yes")
+    }
+
+    try {
+        Merge-OpenSSLPFX @hMergeOptions
+    } catch {
+        Write-Host "PFX generation failed: $_" -ForegroundColor Red
+        return
+    }
+
     if (Test-Path $sOutPFXFile) {
         Write-Host "PFX generated successfully:" -ForegroundColor Green
         Write-Host $sOutPFXFile

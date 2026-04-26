@@ -33,18 +33,26 @@ function Get-ScriptDir {
 
     .NOTES
         Author  : Loïc Ade
-        Version : 1.3.0
+        Version : 1.4.0
 
         1.0.0 - First version
+
         1.1.0 (2026-03-05)
             - Corrected bugs of Get-RootScriptPath
             - Removes -FullPath parameter (always returns full path)
+
         1.2.0 (2026-03-08)
             - InputDir, OutputDir and WorkingDir can be overridden by root script parameters
             - ParameterSetNames renamed to match parameter names
             - Folder name derived from ParameterSetName
+
         1.3.0 (2026-03-10)
             - Uses Get-RootScriptInfo instead of Get-RootScriptPath, Get-RootScriptName and Get-RootScriptArguments
+
+        1.4.0 (2026-04-23)
+            - Emits a Write-Warning when a redirected directory argument is provided but does not exist,
+              instead of silently falling back to the default path
+
     #>
 
     Param(
@@ -65,8 +73,11 @@ function Get-ScriptDir {
     Process {
         if ($InputDir -or $OutputDir -or $WorkingDir) {
             $sRootArgValue = $rootInfo.Arguments[$PSCmdlet.ParameterSetName]
-            if (-not [string]::IsNullOrEmpty($sRootArgValue) -and (Test-Path $sRootArgValue -PathType Container)) {
-                return $sRootArgValue
+            if (-not [string]::IsNullOrEmpty($sRootArgValue)) {
+                if (Test-Path $sRootArgValue -PathType Container) {
+                    return $sRootArgValue
+                }
+                Write-Warning "Redirected $($PSCmdlet.ParameterSetName) path does not exist: '$sRootArgValue'. Falling back to default."
             }
         }
 
