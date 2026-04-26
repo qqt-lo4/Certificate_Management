@@ -25,7 +25,7 @@ Write-Progress -Activity "Loading script modules" -Status "Loading end" -Percent
 #endregion Include
 
 #region script info
-#scriptVersion=2.2
+#scriptVersion=2.3
 #endregion script info
 
 #region Release notes
@@ -55,6 +55,14 @@ Changed:
 
 2.2:
 - Changed UI to allow back almost everywhere
+
+2.3: 
+- First public version
+- Added import certificate from to create a new one
+- Improved pfx creation :
+    files are requested if not present, 
+    and missing CA certs are imported from user and computer stores
+
 #>
 #endregion Release notes
 

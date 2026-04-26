@@ -88,23 +88,32 @@ These filters can also be edited from the **Settings** menu.
 
 ## Release Notes
 
+### 2.3
+- First public version
+- Added "Import from existing certificate" entry to pre-fill a new request from a file path, an HTTPS URL or a host[:port]
+- Improved PFX creation: cert files are requested if not already present in the working folder, and missing intermediates / root are pulled from the Windows certificate stores (user and computer)
+
 ### 2.2
-- Back navigation throughout the wizard
-- Changed script to avoid shared folder in PKI server
+- UI now allows going back almost everywhere
 
 ### 2.1
 - Improved DN form UI
-- Better dialog components
+- Replaced Read-YesNoAnswer with Invoke-YesNoCLIDialog
+- Reworked the main menu
 
 ### 2.0
-- CN verification in SAN
-- All-in-one workflow option
-- Configurable PKI work folder
+- CN verification against SAN
+- "All in one" option (the previous menu items moved under "Advanced")
+- PKI work folder is no longer hardcoded
+
+### 1.1.1
+- Replaced Get-Credential with Read-Credential to work around a bug
 
 ### 1.1
-- Certificate object form validation
-- Option to skip template name
-- Bug fixes for State field and CN regex
+- Certificate object form can now be repeated to validate the entered values
+- Option to skip the template name
+- Fixed the State field (it was impossible to fill)
+- Fixed the form to allow CN with stars and French accented letters in other fields
 
 ### 1.0
 - Initial release
