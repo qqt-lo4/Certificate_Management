@@ -1,22 +1,26 @@
 function Get-ADWMIFilter {
     <#
     .SYNOPSIS
-        Retrieves a Group Policy WMI filter (msWMI-Som object) from AD.
+        Retrieves Group Policy WMI filter(s) (msWMI-Som object) from AD.
 
     .DESCRIPTION
-        Reads the msWMI-Som object stored under
-        CN=SOM,CN=WMIPolicy,CN=System,<domainDN> and returns its main
+        Reads msWMI-Som objects stored under
+        CN=SOM,CN=WMIPolicy,CN=System,<domainDN> and returns their main
         properties: display name, description, author, creation/change
-        timestamps, and the WQL queries it contains.
+        timestamps, and the WQL queries they contain.
 
-        The function accepts either a WMI filter GUID (from a GPO's
-        gPCWQLFilter attribute — the "{GUID}" part of the
-        "[domain;{GUID};0]" format) or the raw gPCWQLFilter value.
+        Supports two modes:
+        - With -Id : returns the single filter matching that GUID (or
+          the GUID embedded in a gPCWQLFilter "[domain;{GUID};0]" value).
+        - Without -Id : enumerates every msWMI-Som object in the target
+          domain (via Get-ADObject -WMIFilter) and emits one object per
+          filter.
 
     .PARAMETER Id
         WMI filter GUID, enclosed in braces ({GUID}) or not. Also
         accepts the full gPCWQLFilter value "[domain;{GUID};0]" for
-        convenience.
+        convenience. When omitted, every filter of the target domain
+        is returned.
 
     .PARAMETER Server
         Domain FQDN or domain controller to query. Defaults to
@@ -39,16 +43,26 @@ function Get-ADWMIFilter {
         $oGPO = Get-ADGroupPolicy -Identity 'Default Domain Policy' -Properties gPCWQLFilter
         Get-ADWMIFilter -Id $oGPO.gpcwqlfilter
 
+    .EXAMPLE
+        # List every WMI filter of the current domain
+        Get-ADWMIFilter | Format-Table Name, Description
+
+    .EXAMPLE
+        # Enumerate every filter of a specific domain (forest scenarios)
+        Get-ADWMIFilter -Server child.contoso.com -Credential $cred
+
     .NOTES
         Author  : Loic Ade
-        Version : 1.0.0
+        Version : 1.1.0
 
+        1.1.0 (2026-04-29) - Add enumeration mode (no -Id) listing every
+                             msWMI-Som object of the target domain via
+                             Get-ADObject -WMIFilter.
         1.0.0 (2026-04-13) - Initial version
     #>
     [CmdletBinding()]
     Param(
-        [Parameter(Mandatory, ValueFromPipeline)]
-        [ValidateNotNullOrEmpty()]
+        [Parameter(ValueFromPipeline)]
         [string]$Id,
 
         [string]$Server = $env:USERDNSDOMAIN,
@@ -58,6 +72,33 @@ function Get-ADWMIFilter {
     )
 
     Process {
+        # When invoked without -Id, enumerate every msWMI-Som object of
+        # the target domain via Get-ADObject -WMIFilter and recurse for
+        # each GUID — the per-filter parsing below stays untouched.
+        if (-not $Id) {
+            $hSomParams = @{
+                WMIFilter   = $true
+                Properties  = @('name')
+                SearchScope = [System.DirectoryServices.SearchScope]::Subtree
+                Server      = $Server
+            }
+            if ($Credential) { $hSomParams['Credential'] = $Credential }
+
+            $aSoms = @()
+            try {
+                $aSoms = @(Get-ADObject @hSomParams)
+            } catch {
+                Write-Warning "Get-ADWMIFilter : enumeration failed on '$Server' - $_"
+                return
+            }
+
+            foreach ($oSom in $aSoms) {
+                if (-not $oSom.name) { continue }
+                Get-ADWMIFilter -Id $oSom.name -Server $Server -Credential $Credential
+            }
+            return
+        }
+
         # Extract the GUID from either a raw "{GUID}" or a full
         # gPCWQLFilter value "[domain.fqdn;{GUID};0]".
         if ($Id -notmatch '\{[0-9a-fA-F\-]+\}') {

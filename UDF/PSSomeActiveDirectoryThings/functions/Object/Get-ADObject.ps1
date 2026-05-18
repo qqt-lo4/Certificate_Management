@@ -78,6 +78,11 @@
     .PARAMETER GroupPolicy
         Filter to Group Policy container objects.
 
+    .PARAMETER WMIFilter
+        Filter to WMI filter SOM objects (msWMI-Som). These live under
+        CN=SOM,CN=WMIPolicy,CN=System,<domainDN> and back the WMI
+        filters referenced by GPO gPCWQLFilter attributes.
+
     .PARAMETER SecurityMasks
         Controls which security descriptor parts are returned when requesting nTSecurityDescriptor.
         By default, the DirectorySearcher does not return security descriptors. Set this to
@@ -127,7 +132,7 @@
 
         [Parameter(ParameterSetName = "LdapFilter")]
         [Parameter(ParameterSetName = "Filter")]
-        [AllowNull][Int32]$ResultSetSize,
+        [AllowNull()][Int32]$ResultSetSize,
 
         [Parameter(ParameterSetName = "LdapFilter")]
         [Parameter(ParameterSetName = "Filter")]
@@ -210,6 +215,12 @@
         [Parameter(ParameterSetName = "Path")]
         [switch]$GroupPolicy,
 
+        [Parameter(ParameterSetName = "LdapFilter")]
+        [Parameter(ParameterSetName = "Filter")]
+        [Parameter(ParameterSetName = "Identity")]
+        [Parameter(ParameterSetName = "Path")]
+        [switch]$WMIFilter,
+
         [Parameter()]
         [System.DirectoryServices.SecurityMasks]$SecurityMasks
     )
@@ -224,6 +235,7 @@
                 [switch]$Group,
                 [switch]$Contact,
                 [switch]$GroupPolicy,
+                [switch]$WMIFilter,
                 [string]$Identity
             )
             $hTypes = @{
@@ -235,8 +247,9 @@
                 "Group" = "(&(objectCategory=Group)(objectClass=group))"
                 "Contact" = "(&(objectCategory=Person)(objectClass=contact))"
                 "GroupPolicy" = "(objectClass=groupPolicyContainer)"
+                "WMIFilter" = "(objectClass=msWMI-Som)"
             }
-            if ($Computer -or $User -or $OU -or $Container -or $Volume -or $Group -or $Contact -or $GroupPolicy) {
+            if ($Computer -or $User -or $OU -or $Container -or $Volume -or $Group -or $Contact -or $GroupPolicy -or $WMIFilter) {
                 $sResult = "(|"
                 foreach ($sParam in $PSBoundParameters.Keys) {
                     if ($PSBoundParameters[$sParam]) {
@@ -328,16 +341,16 @@
             }
             "Identity" {
                 if ($bDN) {
-                    Get-LdapFilter -Computer:$Computer -User:$User -OU:$Ou -Container:$Container -Volume:$Volume -Group:$Group -Contact:$Contact -GroupPolicy:$GroupPolicy
+                    Get-LdapFilter -Computer:$Computer -User:$User -OU:$Ou -Container:$Container -Volume:$Volume -Group:$Group -Contact:$Contact -GroupPolicy:$GroupPolicy -WMIFilter:$WMIFilter
                 } else {
-                    Get-LdapFilter -Computer:$Computer -User:$User -OU:$Ou -Container:$Container -Volume:$Volume -Group:$Group -Contact:$Contact -GroupPolicy:$GroupPolicy -Identity $Identity
+                    Get-LdapFilter -Computer:$Computer -User:$User -OU:$Ou -Container:$Container -Volume:$Volume -Group:$Group -Contact:$Contact -GroupPolicy:$GroupPolicy -WMIFilter:$WMIFilter -Identity $Identity
                 }
             }
             "LdapFilter" {
                 $LDAPFilter
             }
             "Filter" {
-                Get-LdapFilter -Computer:$Computer -User:$User -OU:$Ou -Container:$Container -Volume:$Volume -Group:$Group -Contact:$Contact -GroupPolicy:$GroupPolicy
+                Get-LdapFilter -Computer:$Computer -User:$User -OU:$Ou -Container:$Container -Volume:$Volume -Group:$Group -Contact:$Contact -GroupPolicy:$GroupPolicy -WMIFilter:$WMIFilter
             }
         }
         $ds.Filter = $sLdapFilter
