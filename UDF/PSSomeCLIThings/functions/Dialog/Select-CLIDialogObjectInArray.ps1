@@ -152,6 +152,14 @@ function Select-CLIDialogObjectInArray {
         Switch parameter. When specified, adds an "Exit" button to the navigation menu.
         Returns a DialogResult.Action.Exit result when selected.
 
+    .PARAMETER AddDefaultMenu
+        Switch parameter. When specified, appends the default menu registered with
+        Set-CLIDialogDefaultMenu (resolved via Get-CLIDialogDefaultMenu) to the
+        navigation area. Lets the dialog reuse the host project's standard menu
+        (e.g. Back / Search / Advanced / Exit) without this function knowing
+        anything about the project. Has no effect when no default menu is
+        registered. Appended after any explicit -OtherMenuItems.
+
     .PARAMETER UseArrayPageExtractor
         Switch parameter. When specified, uses the ArrayPageExtractor object for pagination instead
         of manual page calculation. Provides a more object-oriented approach to pagination with
@@ -319,6 +327,12 @@ function Select-CLIDialogObjectInArray {
 
         CHANGELOG:
 
+        Version 1.6.0 - 2026-06-14 - Loïc Ade
+            - Added AddDefaultMenu switch: appends the menu registered via
+              Set-CLIDialogDefaultMenu (resolved with Get-CLIDialogDefaultMenu),
+              so dialogs can reuse the host project's standard navigation menu
+              while keeping this function project-agnostic.
+
         Version 1.5.0 - 2026-04-19 - Loïc Ade
             - Added runtime check for PSSomeDataThings module when -UseArrayPageExtractor is used
             - Color parameter defaults now resolve from the current CLI dialog theme (Get-CLIDialogTheme)
@@ -402,6 +416,7 @@ function Select-CLIDialogObjectInArray {
         [switch]$AllowExit,
         [Alias("ShowBackButton")]
         [switch]$AllowBack,
+        [switch]$AddDefaultMenu,
         [switch]$UseArrayPageExtractor,
         [string]$ValueColumnName = "Value",
         [string[]]$PassthroughActions,
@@ -747,6 +762,21 @@ function Select-CLIDialogObjectInArray {
             New-ArrayPageExtractor -Objects $aObjects -ItemsPerPage $ItemsPerPage
         } else {
             $null
+        }
+
+        # When requested, append the registered default menu (see
+        # Set-CLIDialogDefaultMenu). Keeps this function project-agnostic: the
+        # host registers its menu once and any dialog can opt in via -AddDefaultMenu.
+        if ($AddDefaultMenu) {
+            $fDefaultMenu = Get-CLIDialogDefaultMenu
+            if ($fDefaultMenu) {
+                $oDefaultMenuRows = & $fDefaultMenu
+                $OtherMenuItems = if ($OtherMenuItems) {
+                    @($OtherMenuItems) + @($oDefaultMenuRows)
+                } else {
+                    $oDefaultMenuRows
+                }
+            }
         }
 
         # Main dialog loop

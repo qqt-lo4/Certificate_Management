@@ -459,6 +459,55 @@
         return $iResult
     }
 
+    # Column-based cross-row focus mapping. Given the row the user
+    # was just on (oRowBefore) and the row they're moving to (oRow),
+    # return the FocusedItem index (into oRow.ObjectsIndex) whose
+    # column range contains - or is closest to - the column midpoint
+    # of the previously focused item.
+    #
+    # Works for any horizontal row composition (button, checkbox,
+    # radiobutton, mixed, with or without Space gaps) because the
+    # math only relies on each item's GetTextWidth() and on
+    # ObjectsIndex correctly listing the focusable item positions
+    # inside RowContent.
+    $hResult | Add-Member -MemberType ScriptMethod -Name "FindNearestFocusableByColumn" -Value {
+        Param(
+            [object]$RowBefore,
+            [object]$RowTarget
+        )
+        $iPrevContentIdx = $RowBefore.ObjectsIndex[$RowBefore.FocusedItem]
+        $iPrevStart = 0
+        for ($i = 0; $i -lt $iPrevContentIdx; $i++) {
+            $iPrevStart += $RowBefore.RowContent[$i].GetTextWidth()
+        }
+        $iPrevEnd = $iPrevStart + $RowBefore.RowContent[$iPrevContentIdx].GetTextWidth() - 1
+        $iTargetCol = $iPrevStart + [System.Math]::Floor(($iPrevEnd - $iPrevStart) / 2)
+
+        $iBest = 0
+        $iBestDist = [int]::MaxValue
+        $iCursor = 0
+        for ($i = 0; $i -lt $RowTarget.RowContent.Count; $i++) {
+            $iWidth = $RowTarget.RowContent[$i].GetTextWidth()
+            $iFocusableIdx = $RowTarget.ObjectsIndex.IndexOf($i)
+            if ($iFocusableIdx -ge 0) {
+                $iStart = $iCursor
+                $iEnd = $iCursor + $iWidth - 1
+                if ($iTargetCol -ge $iStart -and $iTargetCol -le $iEnd) {
+                    return $iFocusableIdx
+                }
+                $iDist = [System.Math]::Min(
+                    [System.Math]::Abs($iTargetCol - $iStart),
+                    [System.Math]::Abs($iTargetCol - $iEnd))
+                if ($iDist -lt $iBestDist) {
+                    $iBestDist = $iDist
+                    $iBest = $iFocusableIdx
+                }
+            }
+            $iCursor += $iWidth
+        }
+        return $iBest
+    }
+
     $hResult | Add-Member -MemberType ScriptMethod -Name "PressUp" -Value {
         Param(
             [System.ConsoleKeyInfo]$KeyInfo,
@@ -476,40 +525,12 @@
                 }
             }
             if (($oRowBefore.type -eq "row") -and ($oRow.type -eq "row")) {
-                $oRowBeforeObjTypes = $oRowBefore.RowContent.type | Select-Object -Unique
-                $oRowObjTypes = $oRow.RowContent.type | Select-Object -Unique
-                if (($oRowBeforeObjTypes.Count -eq 1) -and ($oRowObjTypes.Count -eq 1) -and ($oRowBeforeObjTypes -eq "button") -and ($oRowObjTypes -eq "button")) {
-                    if ($oRowBefore.FocusedItem -eq 0) {
-                        if ($oRow.Vertical) {
-                            $oRow.FocusedItem = $oRow.RowContent.Count - 1
-                        } else {
-                            $oRow.FocusedItem = 0
-                        }
-                    } else {
-                        $iButtonBeforeStart = 0
-                        for ($i = 0; $i -lt $oRowBefore.FocusedItem; $i++) {
-                            $iButtonBeforeStart += $oRowBefore.RowContent[$i].GetTextWidth()
-                        }
-                        $iButtonBeforeEnd = $iButtonBeforeStart + $oRowBefore.RowContent[$oRowBefore.FocusedItem].GetTextWidth() - 1
-                        $iButtonBeforeMiddle = $iButtonBeforeStart + [System.Math]::Floor(($iButtonBeforeEnd - $iButtonBeforeStart) / 2)
-
-                        $iRowButtonIndexesLength = ($oRow.RowContent | ForEach-Object { $_.GetTextWidth() } | Measure-Object -Sum).Sum
-
-                        if ($iButtonBeforeMiddle -ge $iRowButtonIndexesLength) {
-                            $oRow.FocusedItem = $oRow.RowContent.Count - 1
-                        } else {
-                            $aRowButtonIndexes = [int[]]::new($iRowButtonIndexesLength)
-                            $i = 0
-                            for ($j = 0; $j -lt $oRow.RowContent.Count ; $j++) {
-                                $iButtonLength = $oRow.RowContent[$j].GetTextWidth()
-                                for ($k = 0; $k -lt $iButtonLength ; $k++) {
-                                    $aRowButtonIndexes[$i] = $j
-                                    $i++
-                                }
-                            }    
-                            $oRow.FocusedItem = $aRowButtonIndexes[$iButtonBeforeMiddle]
-                        }
-                    }
+                if ($oRow.Vertical) {
+                    # Entering a vertical row from below: land at the
+                    # bottom so the next Up press exits at the top.
+                    $oRow.FocusedItem = $oRow.ObjectsIndex.Count - 1
+                } else {
+                    $oRow.FocusedItem = $this.FindNearestFocusableByColumn($oRowBefore, $oRow)
                 }
             }
         }
@@ -532,36 +553,12 @@
                 }
             }
             if (($oRowBefore.type -eq "row") -and ($oRow.type -eq "row")) {
-                $oRowBeforeObjTypes = $oRowBefore.RowContent.type | Select-Object -Unique
-                $oRowObjTypes = $oRow.RowContent.type | Select-Object -Unique
-                if (($oRowBeforeObjTypes.Count -eq 1) -and ($oRowObjTypes.Count -eq 1) -and ($oRowBeforeObjTypes -eq "button") -and ($oRowObjTypes -eq "button")) {
-                    if ($oRowBefore.FocusedItem -eq 0) {
-                        $oRow.FocusedItem = 0
-                    } else {
-                        $iButtonBeforeStart = 0
-                        for ($i = 0; $i -lt $oRowBefore.FocusedItem; $i++) {
-                            $iButtonBeforeStart += $oRowBefore.RowContent[$i].GetTextWidth()
-                        }
-                        $iButtonBeforeEnd = $iButtonBeforeStart + $oRowBefore.RowContent[$oRowBefore.FocusedItem].GetTextWidth() - 1
-                        $iButtonBeforeMiddle = $iButtonBeforeStart + [System.Math]::Floor(($iButtonBeforeEnd - $iButtonBeforeStart) / 2)
-
-                        $iRowButtonIndexesLength = ($oRow.RowContent | ForEach-Object { $_.GetTextWidth() } | Measure-Object -Sum).Sum
-
-                        if ($iButtonBeforeMiddle -ge $iRowButtonIndexesLength) {
-                            $oRow.FocusedItem = $oRow.RowContent.Count - 1
-                        } else {
-                            $aRowButtonIndexes = [int[]]::new($iRowButtonIndexesLength)
-                            $i = 0
-                            for ($j = 0; $j -lt $oRow.RowContent.Count ; $j++) {
-                                $iButtonLength = $oRow.RowContent[$j].GetTextWidth()
-                                for ($k = 0; $k -lt $iButtonLength ; $k++) {
-                                    $aRowButtonIndexes[$i] = $j
-                                    $i++
-                                }
-                            }    
-                            $oRow.FocusedItem = $aRowButtonIndexes[$iButtonBeforeMiddle]
-                        }
-                    }
+                if ($oRow.Vertical) {
+                    # Entering a vertical row from above: land at the
+                    # top so the next Down press exits at the bottom.
+                    $oRow.FocusedItem = 0
+                } else {
+                    $oRow.FocusedItem = $this.FindNearestFocusableByColumn($oRowBefore, $oRow)
                 }
             }
         }

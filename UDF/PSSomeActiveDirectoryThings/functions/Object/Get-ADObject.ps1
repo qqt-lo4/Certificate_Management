@@ -43,7 +43,17 @@
         The AD server or domain to connect to.
 
     .PARAMETER Identity
-        Object identity (sAMAccountName, DN, GUID, SID, CN, or UPN).
+        Object identity, or an array of identities for a single
+        batch lookup. Each entry can be a sAMAccountName, DN,
+        GUID, SID, CN, name, or UPN; the LDAP filter is built as
+        an OR of every per-identity disjunction. Use this batch
+        form to avoid one DirectoryEntry connection per object
+        when resolving a large perimeter (group your identities
+        by domain on the caller side and pass each group to a
+        single Get-ADObject call with the corresponding -Server).
+        DN-style identities are only honoured in the single-value
+        form: when you pass several DNs in one call the function
+        falls back to the filter-based search.
 
     .PARAMETER Partition
         The AD partition to search.
@@ -101,7 +111,18 @@
 
     .NOTES
         Author  : Loïc Ade
-        Version : 1.0.0
+        Version : 1.1.0
+
+        1.1.0 (2026-06-03, Loïc Ade) - -Identity now accepts
+                             [string[]] so a single call can resolve
+                             a batch of objects in one
+                             DirectoryEntry connection. Get-LdapFilter
+                             OR-s the per-identity disjunctions.
+                             DN-binding via path stays available
+                             for the single-value form; the batch
+                             form always uses the filter route.
+
+        1.0.0 - Initial version.
     #>
     [CmdletBinding(DefaultParameterSetName="Filter")]
     Param(
@@ -152,7 +173,7 @@
 
         [Parameter(Mandatory, ValueFromPipeline, ParameterSetName = "Identity")]
         [ValidateNotNull()]
-        [string]$Identity,
+        [string[]]$Identity,
 
         [Parameter(ParameterSetName = "Identity")]
         [ValidateNotNullOrEmpty()]
@@ -236,12 +257,24 @@
                 [switch]$Contact,
                 [switch]$GroupPolicy,
                 [switch]$WMIFilter,
-                [string]$Identity
+                # [string[]] now: when more than one identity is
+                # supplied the function OR-s every per-identity
+                # disjunction so a single DirectoryEntry connection
+                # resolves the whole batch.
+                [string[]]$Identity
             )
+            # The CN-shortcut for objectCategory (e.g., 'Organizational-Unit'
+            # → CN=Organizational-Unit,CN=Schema,...) relies on AD's implicit
+            # schema resolution and has been observed to silently fail for OU
+            # in some forests, returning 0 rows. objectClass alone is reliable
+            # (organizationalUnit is a structural class) so we drop the
+            # objectCategory clause for OU. The other entries keep it because
+            # objectCategory is indexed and single-valued, so it's faster, and
+            # they've been observed to work in practice.
             $hTypes = @{
                 "Computer" = "(&(objectCategory=Computer)(objectClass=computer))"
                 "User" = "(&(objectCategory=User)(objectClass=user))"
-                "OU" = "(&(objectCategory=Organizational-Unit)(objectClass=organizationalUnit))"
+                "OU" = "(objectClass=organizationalUnit)"
                 "Container" = "(&(objectCategory=Container)(objectClass=container))"
                 "Volume" = "(&(objectCategory=Volume)(objectClass=volume))"
                 "Group" = "(&(objectCategory=Group)(objectClass=group))"
@@ -261,9 +294,24 @@
                 $sResult = ""
             }
             
-            if ($Identity) {
-                #$sResult = "(&" + $sResult + "(|(sAMAccountName=$Identity)(objectGUID=$IDentity)(objectSid=$Identity)(cn=$Identity)(name=$Identity)))"
-				$sResult = "(&" + $sResult + "(|(sAMAccountName=$Identity)(objectGUID=$IDentity)(objectSid=$Identity)(cn=$Identity)(name=$Identity)(userPrincipalName=$Identity)))"
+            if ($Identity -and $Identity.Count -gt 0) {
+                # Per-identity disjunction = one OR clause across
+                # the six lookup attributes (sAM, GUID, SID, CN,
+                # name, UPN). For a batch we wrap every per-id
+                # clause in an outer OR so the whole filter still
+                # matches "any object resolving any of the inputs".
+                # @(...) guards against PS unwrapping a 1-element
+                # foreach result to a bare string - without it,
+                # $aIdentityClauses[0] would return the first char.
+                $aIdentityClauses = @(foreach ($sId in $Identity) {
+                    "(|(sAMAccountName=$sId)(objectGUID=$sId)(objectSid=$sId)(cn=$sId)(name=$sId)(userPrincipalName=$sId))"
+                })
+                $sIdentityFilter = if ($aIdentityClauses.Count -eq 1) {
+                    $aIdentityClauses[0]
+                } else {
+                    '(|' + ($aIdentityClauses -join '') + ')'
+                }
+                $sResult = '(&' + $sResult + $sIdentityFilter + ')'
             }
             return $sResult
         }
@@ -294,10 +342,17 @@
         } else {
             $sLdapProtocol
         }
-        $bDN = ($PSCmdlet.ParameterSetName -eq "Identity") -and ($Identity -match ".+,((dc|DC)=[^,]+)")
+        # DN-path binding is the fast path: when the caller passes
+        # the exact DN, we attach it to the LDAP path instead of
+        # building a search filter. Only meaningful for a single
+        # identity - in the batch form we always go through the
+        # filter route since multiple DNs can't share one path.
+        $bDN = ($PSCmdlet.ParameterSetName -eq "Identity") `
+            -and (@($Identity).Count -eq 1) `
+            -and ($Identity[0] -match ".+,((dc|DC)=[^,]+)")
         if ($PSCmdlet.ParameterSetName -ne "Path") {
             if ($bDN) {
-                $sPath += $Identity
+                $sPath += $Identity[0]
             } else {
                 # Read RootDSE from the target server (or local domain if no server specified)
                 $sRootDSEPath = if ($Server) { $sLdapProtocol + $Server + "/RootDSE" } else { $sLdapProtocol + "RootDSE" }

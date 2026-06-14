@@ -51,20 +51,30 @@ function Get-ADGroupPolicyLAPSSettings {
         [string]$GPCFileSysPath,
 
         [AllowNull()]
-        [PSCredential]$Credential
+        [PSCredential]$Credential,
+
+        [AllowNull()]
+        [System.Management.Automation.Runspaces.PSSession]$Session
     )
 
     Process {
         $sPolPath = Join-Path $GPCFileSysPath 'Machine\registry.pol'
-        if (-not (Test-Path $sPolPath)) { return }
 
+        # The local Test-Path that used to live here was redundant - and a
+        # silent bug when -Session is set (it'd run on the local host and
+        # short-circuit even when the remote DC could read the file).
+        # Get-ADGroupPolicyRegistryPolicy already returns nothing on a
+        # missing or unreadable file, so we just call it directly.
         $aEntries = @()
         try {
-            $aEntries = @(Get-ADGroupPolicyRegistryPolicy -Path $sPolPath)
+            $hRegParams = @{ Path = $sPolPath }
+            if ($Session) { $hRegParams['Session'] = $Session }
+            $aEntries = @(Get-ADGroupPolicyRegistryPolicy @hRegParams)
         } catch {
             Write-Warning "Get-ADGroupPolicyLAPSSettings : cannot parse '$sPolPath' - $_"
             return
         }
+        if ($aEntries.Count -eq 0) { return }
 
         # Map of LAPS registry key prefixes to source labels. Order matters:
         # the first match wins (Legacy is checked first to keep its label

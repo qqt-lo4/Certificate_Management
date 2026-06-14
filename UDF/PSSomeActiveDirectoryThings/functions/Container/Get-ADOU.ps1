@@ -1,69 +1,77 @@
-function Get-ADUser {
+function Get-ADOU {
     <#
     .SYNOPSIS
-        Searches for AD user objects
+        Searches for AD organizational unit objects.
 
     .DESCRIPTION
-        Wrapper around Get-ADObject that automatically filters for user objects.
-        Supports identity lookup, LDAP filter, simple filter, and path-based queries
-        with optional Global Catalog search.
+        Wrapper around Get-ADObject that automatically filters for
+        organizationalUnit objects via the -OU switch.
 
     .PARAMETER Filter
-        A filter string to search for users.
+        A PowerShell Where-Object filter applied to results.
 
     .PARAMETER Credential
-        Credentials to use for the directory query.
+        PSCredential for AD authentication.
 
     .PARAMETER Properties
-        The properties to retrieve for each user.
+        Properties to load from AD.
 
     .PARAMETER AdditionalProperties
-        Additional properties to retrieve beyond the defaults.
+        Extra properties loaded in a separate query and merged into results.
 
     .PARAMETER Path
-        An ADS path to retrieve a specific user.
+        Direct LDAP/GC path to an object.
 
     .PARAMETER Strict
-        If specified, uses exact matching for filters.
+        If specified, only returns objects whose path matches the search root exactly.
 
     .PARAMETER ResultPageSize
-        The number of results per page for paged searches.
+        Page size for result pagination.
 
     .PARAMETER ResultSetSize
-        The maximum number of results to return.
+        Maximum number of results.
 
     .PARAMETER SearchBase
-        The DN of the search base.
+        The DN to start searching from.
 
     .PARAMETER SearchScope
-        The scope of the search (Base, OneLevel, Subtree).
+        The search scope (Base, OneLevel, Subtree). Defaults to Subtree.
 
     .PARAMETER Server
-        The domain controller or domain to query.
+        The AD server or domain to connect to.
 
     .PARAMETER Identity
-        The identity of the user (name, DN, UPN, GUID, or SID).
+        OU identity (DN, GUID, or name).
 
     .PARAMETER Partition
-        The naming context partition to search.
+        The AD partition to search.
 
     .PARAMETER LDAPFilter
-        An LDAP filter string to search for users.
+        A raw LDAP filter string.
 
     .PARAMETER UseGlobalCatalog
-        If specified, searches the Global Catalog instead of the domain.
+        If specified, uses the Global Catalog (GC://).
+
+    .PARAMETER SecurityMasks
+        Pass-through to Get-ADObject so callers can request the
+        nTSecurityDescriptor (or other security-protected attributes).
 
     .OUTPUTS
-        [object]. One or more AD user objects.
+        Custom AD organizationalUnit object(s).
 
     .EXAMPLE
-        Get-ADUser -Identity "jdoe" -Properties "mail", "department"
+        Get-ADOU -Server contoso.com
+
+    .EXAMPLE
+        Get-ADOU -Server contoso.com -Properties 'distinguishedName', 'description'
 
     .NOTES
         Author  : Loïc Ade
         Version : 1.0.0
+
+        1.0.0 (2026-05-20) - Initial version
     #>
-    [CmdletBinding(DefaultParameterSetName="Filter")]
+    [CmdletBinding(DefaultParameterSetName = "Filter")]
     Param(
         [Parameter(ParameterSetName = "Filter")]
         [string]$Filter,
@@ -81,7 +89,7 @@ function Get-ADUser {
         [Parameter(ParameterSetName = "Path")]
         [ValidateNotNull()]
         [string]$Path,
-        
+
         [ValidateNotNull()]
         [switch]$Strict,
 
@@ -127,10 +135,8 @@ function Get-ADUser {
         [Parameter(ParameterSetName = "Identity")]
         [switch]$UseGlobalCatalog,
 
-        # Pass-through to Get-ADObject so callers can request the
-        # nTSecurityDescriptor (or other security-protected attributes).
         [Parameter()]
         [System.DirectoryServices.SecurityMasks]$SecurityMasks
     )
-    return (Get-ADObject @PSBoundParameters -User)
+    return (Get-ADObject @PSBoundParameters -OU)
 }

@@ -132,7 +132,12 @@ function Get-ADGroupPolicy {
         [Parameter(ParameterSetName = "LdapFilter")]
         [Parameter(ParameterSetName = "Filter")]
         [Parameter(ParameterSetName = "Identity")]
-        [switch]$UseGlobalCatalog
+        [switch]$UseGlobalCatalog,
+
+        # Pass-through to Get-ADObject so callers can request the nTSecurityDescriptor
+        # (or other security-protected attributes) on GPO objects.
+        [Parameter()]
+        [System.DirectoryServices.SecurityMasks]$SecurityMasks
     )
     return (Get-ADObject @PSBoundParameters -GroupPolicy)
 }

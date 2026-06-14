@@ -73,23 +73,18 @@ function Get-ADGroupPolicyLocalGroupMembership {
         [string]$GPCFileSysPath,
 
         [AllowNull()]
-        [PSCredential]$Credential
+        [PSCredential]$Credential,
+
+        [AllowNull()]
+        [System.Management.Automation.Runspaces.PSSession]$Session
     )
 
     Process {
         # --- Helpers ---------------------------------------------------------
-        # SID -> NTAccount string. Returns $null on failure (unresolvable SID,
-        # untrusted domain, etc.).
-        function Resolve-SidName {
-            Param([string]$Sid)
-            if (-not $Sid) { return $null }
-            try {
-                $oSid = New-Object System.Security.Principal.SecurityIdentifier($Sid)
-                return $oSid.Translate([System.Security.Principal.NTAccount]).Value
-            } catch {
-                return $null
-            }
-        }
+        # SID -> NTAccount string: delegated to the module-level
+        # Resolve-ADSidName so the global cache is shared with every
+        # other consumer of GptTmpl.inf principal lists (Export-AD's
+        # Privilege Rights scan in particular).
 
         # NTAccount string -> SID. Returns $null on failure.
         function Resolve-NameSid {
@@ -110,7 +105,7 @@ function Get-ADGroupPolicyLocalGroupMembership {
             if (-not $sToken) { return $null }
             if ($sToken -match '^\*(?<sid>S-1-[\d-]+)$') {
                 $sSid  = $Matches['sid']
-                $sName = Resolve-SidName -Sid $sSid
+                $sName = Resolve-ADSidName -Sid $sSid
                 return [PSCustomObject][ordered]@{ Name = $sName; Sid = $sSid }
             } else {
                 # Strip enclosing quotes if present
@@ -127,6 +122,7 @@ function Get-ADGroupPolicyLocalGroupMembership {
         try {
             $hSecParams = @{ GPCFileSysPath = $GPCFileSysPath }
             if ($Credential) { $hSecParams['Credential'] = $Credential }
+            if ($Session)    { $hSecParams['Session']    = $Session }
             $aSettings = @(Get-ADGroupPolicySecuritySettings @hSecParams)
         } catch {
             Write-Warning "Get-ADGroupPolicyLocalGroupMembership : GptTmpl.inf - $_"
@@ -154,7 +150,7 @@ function Get-ADGroupPolicyLocalGroupMembership {
                     Source             = 'Restricted Groups'
                     GroupSid           = $oGroupId.Sid
                     GroupName          = $oGroupId.Name
-                    ResolvedName       = if ($oGroupId.Sid) { Resolve-SidName -Sid $oGroupId.Sid } else { $null }
+                    ResolvedName       = if ($oGroupId.Sid) { Resolve-ADSidName -Sid $oGroupId.Sid } else { $null }
                     Action             = $null
                     NewName            = $null
                     Description        = $null
@@ -208,13 +204,22 @@ function Get-ADGroupPolicyLocalGroupMembership {
         # =====================================================================
         $sGroupsXml = Join-Path $GPCFileSysPath 'Machine\Preferences\Groups\Groups.xml'
 
-        if (-not (Test-Path -Path $sGroupsXml)) { return }
-
-        $oXml = $null
+        # Read the XML blob via Read-ADPolicyFile so -Session transparently
+        # delegates the SYSVOL read to a remote host when needed. The XML
+        # parse stays local on the casted string.
+        $sXmlRaw = $null
         try {
-            [xml]$oXml = Get-Content -Path $sGroupsXml -Raw -ErrorAction Stop
+            $sXmlRaw = Read-ADPolicyFile -Path $sGroupsXml -Mode TextRaw -Session $Session
         } catch {
             Write-Warning "Get-ADGroupPolicyLocalGroupMembership : cannot read '$sGroupsXml' - $_"
+            return
+        }
+        if (-not $sXmlRaw) { return }
+        $oXml = $null
+        try {
+            [xml]$oXml = $sXmlRaw
+        } catch {
+            Write-Warning "Get-ADGroupPolicyLocalGroupMembership : malformed XML at '$sGroupsXml' - $_"
             return
         }
 
@@ -260,7 +265,7 @@ function Get-ADGroupPolicyLocalGroupMembership {
                 Source             = 'GPP'
                 GroupSid           = $sGroupSid
                 GroupName          = $sGroupName
-                ResolvedName       = Resolve-SidName -Sid $sGroupSid
+                ResolvedName       = Resolve-ADSidName -Sid $sGroupSid
                 Action             = $sAction
                 NewName            = if ($oProps.newName) { $oProps.newName } else { $null }
                 Description        = if ($oProps.description) { $oProps.description } else { $null }

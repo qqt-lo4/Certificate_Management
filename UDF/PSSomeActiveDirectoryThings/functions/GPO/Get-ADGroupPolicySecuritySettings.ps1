@@ -23,6 +23,13 @@ function Get-ADGroupPolicySecuritySettings {
     .PARAMETER Credential
         Optional PSCredential for SYSVOL access.
 
+    .PARAMETER Session
+        Optional PSSession to read the file from. When set, the SYSVOL
+        Test-Path / Get-Content runs inside the session via Invoke-Command,
+        so the file is touched by the remote machine's identity. Useful
+        when the GPO ACL filters out the local caller but a remote admin
+        host can still read it.
+
     .OUTPUTS
         PSCustomObject[] with properties: Section, Setting, Type, Value.
         Type is populated only for [Registry Values] entries (REG_SZ,
@@ -49,28 +56,32 @@ function Get-ADGroupPolicySecuritySettings {
         [string]$GPCFileSysPath,
 
         [AllowNull()]
-        [PSCredential]$Credential
+        [PSCredential]$Credential,
+
+        [AllowNull()]
+        [System.Management.Automation.Runspaces.PSSession]$Session
     )
 
     Process {
         $sInfPath = Join-Path $GPCFileSysPath "MACHINE\Microsoft\Windows NT\SecEdit\GptTmpl.inf"
 
-        # Probe + read the INF file in a single guarded block so that any
-        # SYSVOL access failure (permission denied, network issues, ...) is
-        # surfaced once with the offending path and the function exits
-        # gracefully — the caller (and the overall export) keeps running.
+        # Read via Read-ADPolicyFile so the lookup transparently delegates to a
+        # PSSession when -Session is set. The helper returns $null when the file
+        # is absent (Test-Path failure inside the read scriptblock), so we don't
+        # need a separate Test-Path round trip - particularly important when the
+        # file is on a remote SYSVOL the local caller cannot reach.
         $aLines = $null
         try {
-            if (-not (Test-Path $sInfPath -ErrorAction Stop)) {
-                # Not all GPOs contain a security template (only those defining
-                # password / lockout / audit / privilege / registry security
-                # settings do). Treat missing files as "no settings" silently.
-                Write-Verbose "GptTmpl.inf not found: $sInfPath"
-                return
-            }
-            $aLines = Get-Content -Path $sInfPath -Encoding Unicode -ErrorAction Stop
+            $aLines = Read-ADPolicyFile -Path $sInfPath -Mode Text -Session $Session
         } catch {
             Write-Warning "Get-ADGroupPolicySecuritySettings : cannot access '$sInfPath' - $_"
+            return
+        }
+        if ($null -eq $aLines) {
+            # Not all GPOs contain a security template (only those defining
+            # password / lockout / audit / privilege / registry security
+            # settings do). Treat missing files as "no settings" silently.
+            Write-Verbose "GptTmpl.inf not found: $sInfPath"
             return
         }
 

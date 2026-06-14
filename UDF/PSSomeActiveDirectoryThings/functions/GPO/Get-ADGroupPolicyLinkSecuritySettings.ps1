@@ -21,6 +21,15 @@ function Get-ADGroupPolicyLinkSecuritySettings {
         gPLink attribute and returns links from all of them. Use this to
         include GPOs linked at OU level, not just at the domain root.
 
+    .PARAMETER FilterTargets
+        Optional list of distinguished names. When set in -Recursive
+        mode, the discovered container list is intersected with this
+        set BEFORE the per-container GPO fetch + GptTmpl.inf parse
+        runs. Used by scoped audit exports to skip GPOs linked to
+        out-of-scope OUs (DCs, PAW, unrelated business units, ...)
+        and shave the heavy fetch / parse cost from those branches.
+        DNs are compared case-insensitively.
+
     .PARAMETER Server
         Domain FQDN or domain controller to query. Defaults to $env:USERDNSDOMAIN.
 
@@ -30,10 +39,14 @@ function Get-ADGroupPolicyLinkSecuritySettings {
     .OUTPUTS
         PSCustomObject[] with properties:
             LinkedTo, DisplayName, GPOId, LinkOrder, LinkEnabled,
-            LinkEnforced, GPCFileSysPath, WMIFilter,
+            LinkEnforced, GPCFileSysPath, WMIFilter, GPOStatus,
             SecuritySettingsCount, SecuritySettings.
         WMIFilter holds the display name of the msWMI-Som object referenced
         by gPCWQLFilter, or $null when no filter is attached.
+        GPOStatus reflects the GPO-object-level 'flags' attribute (distinct
+        from per-link LinkEnabled): 'Enabled' (flags=0) / 'UserDisabled'
+        (flags=1) / 'ComputerDisabled' (flags=2) / 'AllDisabled' (flags=3).
+        Mapping per MS-GPOL section 2.2.4.
 
     .EXAMPLE
         Get-ADGroupPolicyLinkSecuritySettings
@@ -46,7 +59,15 @@ function Get-ADGroupPolicyLinkSecuritySettings {
 
     .NOTES
         Author  : Loïc Ade
-        Version : 1.0.0
+        Version : 1.1.0
+
+        1.1.0 (2026-06-04, Loic Ade) - Add -FilterTargets [string[]]
+                             optional pre-filter applied after the
+                             -Recursive gPLink discovery. Used by
+                             scoped audit reports (perimeter OU
+                             ancestors) so the heavy per-container
+                             GPO fetch + GptTmpl.inf parse only
+                             runs on perimeter-applicable OUs.
 
         1.0.0 (2026-04-13) - Initial version
     #>
@@ -56,10 +77,18 @@ function Get-ADGroupPolicyLinkSecuritySettings {
 
         [switch]$Recursive,
 
+        # Scoped audit support: intersect the discovered container
+        # list with this set before paying the per-container GPO
+        # fetch + GptTmpl.inf parse. Case-insensitive DN compare.
+        [string[]]$FilterTargets,
+
         [string]$Server = $env:USERDNSDOMAIN,
 
         [AllowNull()]
-        [PSCredential]$Credential
+        [PSCredential]$Credential,
+
+        [AllowNull()]
+        [System.Management.Automation.Runspaces.PSSession]$Session
     )
 
     Process {
@@ -88,6 +117,20 @@ function Get-ADGroupPolicyLinkSecuritySettings {
             foreach ($oCont in $aContainers) {
                 $aTargets += $oCont.distinguishedname
             }
+
+            # Optional perimeter filter: drop discovered containers
+            # that aren't in the audit scope so we don't pay the
+            # GPO-fetch + GptTmpl parse cost for OUs the caller
+            # has already determined are out of perimeter.
+            if ($FilterTargets) {
+                $hFilter = @{}
+                foreach ($t in $FilterTargets) {
+                    if ($t) { $hFilter[([string]$t).ToUpperInvariant()] = $true }
+                }
+                $iBefore = $aTargets.Count
+                $aTargets = @($aTargets | Where-Object { $hFilter.ContainsKey(([string]$_).ToUpperInvariant()) })
+                Write-Verbose "Get-ADGroupPolicyLinkSecuritySettings : FilterTargets kept $($aTargets.Count)/$iBefore container(s)"
+            }
         } else {
             $sLinkedTo = $Target
             if (-not $sLinkedTo) {
@@ -103,14 +146,20 @@ function Get-ADGroupPolicyLinkSecuritySettings {
             if ($Server) { $hParams['Server'] = $Server }
             if ($Credential) { $hParams['Credential'] = $Credential }
 
-            $aGPOLinks = @(Get-ADGroupPolicyLink @hParams -Properties 'displayName', 'gPCFileSysPath', 'gPCWQLFilter')
+            # 'name' is the GPO's CN (the {GUID}); needed by callers that join
+            # link records to GPO-object lookups (e.g., per-GPO DACL maps for
+            # Empty-Filtering checks). Without it, $oLink.name is $null.
+            $aGPOLinks = @(Get-ADGroupPolicyLink @hParams -Properties 'name', 'displayName', 'gPCFileSysPath', 'gPCWQLFilter', 'flags')
 
             foreach ($oLink in $aGPOLinks) {
                 $sFileSysPath = $oLink.gPCFileSysPath
                 $aSettings = @()
 
                 if ($sFileSysPath) {
-                    $aSettings = @(Get-ADGroupPolicySecuritySettings -GPCFileSysPath $sFileSysPath)
+                    $hSecParams = @{ GPCFileSysPath = $sFileSysPath }
+                    if ($Credential) { $hSecParams['Credential'] = $Credential }
+                    if ($Session)    { $hSecParams['Session']    = $Session }
+                    $aSettings = @(Get-ADGroupPolicySecuritySettings @hSecParams)
                 }
 
                 # Resolve WMI filter display name, cache results per invocation
@@ -130,6 +179,22 @@ function Get-ADGroupPolicyLinkSecuritySettings {
                     }
                 }
 
+                # GPO-object-level 'flags' (distinct from per-link LinkEnabled).
+                # Per MS-GPOL section 2.2.4:
+                #   0 = all enabled, 1 = user config disabled,
+                #   2 = computer config disabled, 3 = all settings disabled.
+                # Null/missing flags is treated as 0 (Enabled) - the legacy
+                # default when the attribute is unset.
+                $iGPOFlags = 0
+                try { if ($null -ne $oLink.flags) { $iGPOFlags = [int]$oLink.flags } } catch {}
+                $sGPOStatus = switch ($iGPOFlags) {
+                    0       { 'Enabled' }
+                    1       { 'UserDisabled' }
+                    2       { 'ComputerDisabled' }
+                    3       { 'AllDisabled' }
+                    default { "Unknown ($iGPOFlags)" }
+                }
+
                 [PSCustomObject][ordered]@{
                     LinkedTo              = $sLinkedTo
                     DisplayName           = $oLink.displayname
@@ -139,6 +204,7 @@ function Get-ADGroupPolicyLinkSecuritySettings {
                     LinkEnforced          = $oLink.LinkEnforced
                     GPCFileSysPath        = $sFileSysPath
                     WMIFilter             = $sWMIFilter
+                    GPOStatus             = $sGPOStatus
                     SecuritySettingsCount = $aSettings.Count
                     SecuritySettings      = $aSettings
                 }

@@ -18,6 +18,13 @@ function Get-ADGroupPolicyRegistryPolicy {
     .PARAMETER Path
         Path to the registry.pol file.
 
+    .PARAMETER Session
+        Optional PSSession to read the file from. When set, the SYSVOL
+        bytes are fetched via Invoke-Command on the remote host (which
+        is useful when the GPO ACL filters out the local caller but a
+        remote admin host can still read it). Parsing of the PReg format
+        stays on the local side - only the read crosses the wire.
+
     .OUTPUTS
         PSCustomObject[] with properties: Key, Value, Type, Data.
 
@@ -33,14 +40,26 @@ function Get-ADGroupPolicyRegistryPolicy {
     [CmdletBinding()]
     Param(
         [Parameter(Mandatory)]
-        [string]$Path
+        [string]$Path,
+
+        [AllowNull()]
+        [System.Management.Automation.Runspaces.PSSession]$Session
     )
 
     Process {
-        if (-not (Test-Path $Path)) { return }
-
-        $aBytes = [System.IO.File]::ReadAllBytes($Path)
-        if ($aBytes.Length -lt 8) { return }
+        # Bytes are fetched via Read-ADPolicyFile so -Session transparently
+        # delegates to the remote host's filesystem. The helper returns $null
+        # when the file is absent; otherwise we get the byte[] back intact
+        # (the helper wraps the byte array with ',' inside the scriptblock to
+        # prevent PowerShell from unrolling it into single-byte emissions).
+        $aBytes = $null
+        try {
+            $aBytes = Read-ADPolicyFile -Path $Path -Mode Bytes -Session $Session
+        } catch {
+            Write-Warning "Get-ADGroupPolicyRegistryPolicy : cannot read '$Path' - $_"
+            return
+        }
+        if ($null -eq $aBytes -or $aBytes.Length -lt 8) { return }
 
         # Signature check: "PReg"
         if ($aBytes[0] -ne 0x50 -or $aBytes[1] -ne 0x52 -or `

@@ -1,4 +1,4 @@
-function Get-CLIDialogTheme {
+﻿function Get-CLIDialogTheme {
     <#
     .SYNOPSIS
         Retrieves the current CLI dialog theme or a specific theme property.
@@ -33,14 +33,17 @@ function Get-CLIDialogTheme {
 
     .NOTES
         Author: Loïc Ade
-        Version: 1.0.0
+        Version: 1.1.0
 
         THEME PROPERTIES:
         - ForegroundColor              : Default foreground color for text and buttons
         - BackgroundColor              : Default background color
         - HeaderForegroundColor        : Foreground color for headers (textbox, property, row labels)
         - HeaderBackgroundColor        : Background color for headers
-        - FocusedHeaderForegroundColor : Foreground color for focused headers
+        - HighlightColor               : Semantic "accent" color. Cascades to FocusedHeaderForegroundColor,
+                                         MatchTextForegroundColor, and SeparatorColor when those keys aren't
+                                         explicitly overridden in Set-CLIDialogTheme.
+        - FocusedHeaderForegroundColor : Foreground color for focused headers (cascade default = HighlightColor)
         - FocusedHeaderBackgroundColor : Background color for focused headers
         - FocusedForegroundColor       : Foreground color for focused controls (buttons, checkboxes, radio buttons, menu items)
         - FocusedBackgroundColor       : Background color for focused controls
@@ -48,7 +51,7 @@ function Get-CLIDialogTheme {
         - SelectionBackgroundColor     : Background color for selected text in textboxes
         - SelectionCursorBackgroundColor : Background color for the cursor character within a text selection
         - ValidationErrorColor         : Color for headers when validation fails
-        - MatchTextForegroundColor     : Foreground color for pattern-matched text in properties
+        - MatchTextForegroundColor     : Foreground color for pattern-matched text in properties (cascade default = HighlightColor)
         - MatchTextBackgroundColor     : Background color for pattern-matched text in properties
         - TableHeaderForegroundColor   : Foreground color for table column headers
         - HintColor                    : Color for hint/help text
@@ -57,9 +60,14 @@ function Get-CLIDialogTheme {
         - OverflowIndicatorColor       : Color for overflow indicators (◄/►)
         - OverflowIndicatorLeft        : Left overflow indicator character (default ◄)
         - OverflowIndicatorRight       : Right overflow indicator character (default ►)
-        - SeparatorColor               : Foreground color for separator lines
+        - SeparatorColor               : Foreground color for separator lines (cascade default = HighlightColor)
 
         CHANGELOG:
+
+        Version 1.1.0 - 2026-06-04 - Loïc Ade
+            - Document new HighlightColor key and cascade defaults
+              of FocusedHeaderForegroundColor, MatchTextForegroundColor,
+              and SeparatorColor.
 
         Version 1.0.0 - 2026-04-03 - Loïc Ade
             - Initial release
