@@ -40,7 +40,8 @@ function Get-CLIDialogObject {
     .PARAMETER ObjectContent
         Optional content descriptor (Value, Properties, Sort, FriendlyPropertyName,
         PropertyName, EmptyMessage) rendered as a paginated table below the
-        properties.
+        properties. An optional OnSelectFunction (a view name) is not used here but is
+        read by Show-CLIDialogObject to open a selected row in that view.
 
     .PARAMETER ExpandPropertyPage
         Zero-based page index of the content table to render.
@@ -88,6 +89,9 @@ function Get-CLIDialogObject {
               (which tested an undefined $ADObject variable) is replaced by a
               convention lookup of Add-<Type>Properties over the type hierarchy,
               and the enrichment is now separated from the property selection.
+            - Refresh is now a visible form-level row (header "Object") shown
+              whenever the object exposes a Refresh() method, independent of any
+              -OtherMenuItems footer override; the F5 shortcut is kept.
     #>
     Param(
         [Parameter(Mandatory, Position = 0)]
@@ -183,10 +187,20 @@ function Get-CLIDialogObject {
         $aForm += $ObjectMenu
         $aForm += New-CLIDialogSeparator -AutoLength -Char $PropertiesContentSeparator -ForegroundColor $SeparatorColor
     }
+    $aHiddenButtons = @()
+
+    # Form-level Refresh: shown whenever the object supports Refresh(), independent
+    # of any footer override (-OtherMenuItems). Visible row + F5 shortcut.
+    if ("Refresh" -in $Object.PSObject.Methods.Name) {
+        $aForm += New-CLIDialogObjectsRow -Header "Object" -Row @(
+            New-CLIDialogButton -Text "&Refresh" -Refresh
+        )
+        $aHiddenButtons += New-CLIDialogButton -Text "Refresh" -Keyboard F5 -Refresh
+    }
+
     if ($OtherMenuItems) {
         $aForm += $OtherMenuItems
     } else {
-        $aHiddenButtons = @()
         if ($ObjectContent.Value) {
             if ($bCanNextPage -or $bCanPreviousPage) {
                 $aRow = @()
@@ -200,9 +214,6 @@ function Get-CLIDialogObject {
                 }
                 $aForm += New-CLIDialogObjectsRow -Header "Page" -Row $aRow
             }
-        }
-        if ("Refresh" -in $Object.PSObject.Methods.Name) {
-            $aHiddenButtons += New-CLIDialogButton -Text "Refresh" -Keyboard F5 -Refresh
         }
         # Default footer menu is injected by the host project via
         # Set-CLIDialogDefaultMenu, keeping this module project-agnostic.

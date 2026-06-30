@@ -35,8 +35,23 @@ function Get-ADDNObject {
 
     .NOTES
         Author  : Loïc Ade
-        Version : 1.0.0
-        Version 1.0: First version
+        Version : 2.0.0
+
+        CHANGELOG:
+
+        Version 2.0.0 - 2026-06-16 - Loïc Ade
+            - Refactored as a thin wrapper around Get-ADObject (now that it accepts a
+              batch [string[]] -Identity). DNs are grouped by domain and each group is
+              resolved by one Get-ADObject call. Removes the duplicate, divergent
+              object builder: resolved objects are now ordinary Get-ADObject objects
+              (hashtable shape, Refresh(), full PSTypeNames including "ADObject").
+              Fixes drilled-in views (e.g. a managed user opened from "List managed
+              users") where computed attributes silently came back empty and the
+              logon-status tests threw, because the old PSCustomObject lacked the
+              "ADObject" type token and could not accept lazily-added properties.
+
+        Version 1.0.0 - Loïc Ade
+            - First version.
     #>
     
     Param(
@@ -60,84 +75,28 @@ function Get-ADDNObject {
         [switch]$UseGlobalCatalog
     )
     Begin {
-        function New-DNLdapFilter {
-            Param(
-                [string[]]$DN
-            )
-            $aResult = @()
-            $aResult += "(|"
-            foreach ($sDN in $DN) {
-                $aResult += "(distinguishedName=$sDN)"
-            }
-            $aResult += ")"
-            return ($aResult -join "")
-        }
-
+        # Resolve the DN list through Get-ADObject so the whole module has a SINGLE
+        # AD-object builder (object shape, Refresh(), PSTypeNames). DNs are grouped by
+        # domain so a multi-domain forest is queried once per domain; Get-ADObject's
+        # batch -Identity OR-s the per-DN clauses (it matches distinguishedName) into a
+        # single query per domain.
         $aGroupedDN = Group-DNByDomain -DNList $DN
         if ($Server -and ($aGroupedDN.Count -gt 1)) {
             throw "Can't specify server : there is more than one domain in the DN list"
         }
-        $aServerList = if ($Server) { $Server } else { $aGroupedDN.Keys }
-
         $aResults = @()
-        $defaultDisplaySet = 'distinguishedname','givenname','Name','objectclass','objectguid','samaccountname','objectsid','sn','userprincipalname'
-        $defaultDisplayPropertySet = New-Object System.Management.Automation.PSPropertySet('DefaultDisplayPropertySet',[string[]]$defaultDisplaySet)
-        $PSStandardMembers = [System.Management.Automation.PSMemberInfo[]]@($defaultDisplayPropertySet)
-
-        foreach ($sDomain in $aServerList) {
-            $sPath = if ($UseGlobalCatalog) { "GC://$sDomain" } else { "LDAP://$sDomain" }
-            $de = Connect-DirectoryEntry -Server $sPath -Credential $Credential
-            $ds = New-Object System.DirectoryServices.DirectorySearcher($de);
-
-            foreach ($sProperty in $Properties) {
-                $ds.PropertiesToLoad.Add($sProperty) | Out-Null
+        foreach ($oDomainGroup in $aGroupedDN.GetEnumerator()) {
+            $sDomain   = $oDomainGroup.Key
+            $aDomainDN = @($oDomainGroup.Value)
+            $hGetADObjectArgs = @{
+                Identity = $aDomainDN
+                Server   = if ($Server) { $Server } else { $sDomain }
             }
-            $ds.Filter = New-DNLdapFilter -DN $DN
-
-            $aADResults = $ds.FindAll()
-            $aGroupedADResults = $aADResults | Group-Object -Property Path -AsHashTable
-            if ($AdditionalProperties) {
-                $ds.PropertiesToLoad.Clear()
-                foreach ($sProperty in $AdditionalProperties) {
-                    $ds.PropertiesToLoad.Add($sProperty) | Out-Null
-                }
-                $aADResultsAdditionalProp = $ds.FindAll()
-            } else {
-                $aADResultsAdditionalProp = $null
-            }
-            $aGroupedADAdditionalPropResults = if ($null -eq $aADResultsAdditionalProp) {
-                $null
-            } else {
-                $aADResultsAdditionalProp | Group-Object -Property Path -AsHashTable
-            }
-
-            foreach ($sADObjectPath in $aGroupedADResults.Keys) {
-                $hADObject = @{
-                    AdditionalProperties = @{
-                        Path = $sADObjectPath
-                        SearchResult = $aGroupedADResults[$sADObjectPath]
-                        AdditionalPropSearchResult = if ($AdditionalProperties) { $aGroupedADAdditionalPropResults[$sADObjectPath] } else { $null }
-                    }
-                }
-                foreach ($p in $hADObject.AdditionalProperties.SearchResult.Properties.Keys) {
-                    $oValue = $hADObject.AdditionalProperties.SearchResult.Properties[$p]
-                    if (($null -ne $oValue) -and ($oValue -ne @())) {
-                        $hADObject[$p] = Convert-ADObjectValue -Property $p -Value ($oValue)    
-                    } else {
-                        $hADObject[$p] = $null
-                    }
-                }
-                if ($AdditionalProperties) {
-                    $oAdditionalPropResult = $hADObject.AdditionalProperties.AdditionalPropSearchResult
-                    foreach ($p in $oAdditionalPropResult.Properties.Keys) {
-                        $hADObject[$p] = Convert-ADObjectValue -Property $p -Value ($oAdditionalPropResult.Properties[$p])
-                    }   
-                }
-                $oNewResult = New-Object -TypeName psobject -Property $hADObject
-                $oNewResult | Add-Member MemberSet PSStandardMembers $PSStandardMembers
-                $oNewResult.psobject.TypeNames.Insert(0, "AD" + $oNewResult.objectclass)
-                $aResults += $oNewResult 
-            }
+            if ($Properties)           { $hGetADObjectArgs.Properties = $Properties }
+            if ($AdditionalProperties) { $hGetADObjectArgs.AdditionalProperties = $AdditionalProperties }
+            if ($Credential)           { $hGetADObjectArgs.Credential = $Credential }
+            if ($UseGlobalCatalog)     { $hGetADObjectArgs.UseGlobalCatalog = $true }
+            $aResults += Get-ADObject @hGetADObjectArgs
         }
     }
     Process {

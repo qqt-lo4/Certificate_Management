@@ -154,15 +154,16 @@ function New-CLIDialogTableItems {
         $aFormRows += if ($Checkbox) {
             if ($EnabledObjectsArray) {
                 if ($EnabledObjectsArray.Value | Where-Object { $_.$EnabledObjectsUniqueProperty -eq $Objects[$i - 1].$EnabledObjectsUniqueProperty }) {
-                    New-CLIDialogCheckBox @hParams -Enabled $true
+                    New-CLIDialogCheckBox @hParams -Enabled $true -NoAccelerator
                 } else {
-                    New-CLIDialogCheckBox @hParams -Enabled $false
+                    New-CLIDialogCheckBox @hParams -Enabled $false -NoAccelerator
                 }
             } else {
-                New-CLIDialogCheckBox @hParams
+                New-CLIDialogCheckBox @hParams -NoAccelerator
             }
         } else {
-            New-CLIDialogButton @hParams
+            # Row text is data: do not treat "&" as a keyboard accelerator.
+            New-CLIDialogButton @hParams -NoAccelerator
         }
     }
     return $aFormRows

@@ -313,27 +313,34 @@ function Export-ADSecurityReport {
         # in-scope domains, the upper-cased ancestor DN set used by
         # the per-domain Phase 2 to filter GPO Links to OUs touching
         # this perim, and the slug-cased tab id.
-        function Get-PerimTabId {
-            Param([string]$Name)
-            return (($Name -replace '[^\w]', '-').Trim('-').ToLower())
-        }
-
         $hPerimData = [ordered]@{}
         if ($bScoped) {
             Write-Progress -Activity $sCallerName -Status "Resolving perimeters..." -PercentComplete 5
             $hRA = @{}
             if ($Credential) { $hRA['Credential'] = $Credential }
 
+            # Properties consumed by the perimeter inventory rendering
+            # (Phase 1) + the disabled flag + the DN extraction below.
+            # The custom Get-ADObject (PSSomeActiveDirectoryThings)
+            # builds its result dictionary only from the explicitly
+            # requested properties + objectclass: nothing is returned
+            # by default, so distinguishedName has to be listed here
+            # or the perim scope / ancestor walk below see empty DNs.
+            $aInventoryProps = @('distinguishedName','samAccountName','displayName','mail','operatingSystem','userAccountControl')
+
             foreach ($sPerimName in $Perimeter.Keys) {
                 $aIds = @($Perimeter[$sPerimName] | Where-Object { $_ })
                 if ($aIds.Count -eq 0) { continue }
 
-                $aObjects = @(Resolve-ADObject -Identity $aIds @hRA)
+                $aObjects = @(Resolve-ADObject -Identity $aIds -Properties $aInventoryProps @hRA)
 
                 $hScopeDom = @{}
                 $hAncestors = @{}
                 foreach ($oObj in $aObjects) {
-                    $sDn = [string]$oObj.distinguishedname
+                    # Bracket access (lowercase to match the LDAP
+                    # attribute name keys the custom Get-ADObject
+                    # stores in its result dictionary).
+                    $sDn = [string]$oObj['distinguishedname']
                     if (-not $sDn) { continue }
                     $sDomDns = (($sDn -split ',') | ForEach-Object {
                         if ($_ -match '^DC=(.+)$') { $Matches[1] }
@@ -354,7 +361,7 @@ function Export-ADSecurityReport {
                 }
 
                 $hPerimData[$sPerimName] = @{
-                    Tab          = Get-PerimTabId $sPerimName
+                    Tab          = $sPerimName
                     Identities   = $aIds
                     Objects      = $aObjects
                     ScopeDomains = $hScopeDom
@@ -405,7 +412,6 @@ function Export-ADSecurityReport {
         # against $hPerimeterAncestors continue to work for the
         # unscoped path (Ancestors is empty so nothing is filtered out)
         # and for the single-perim case (where the union IS the perim).
-        $aPerimeterObjects = @($hPerimData.Values | ForEach-Object { $_.Objects } | Where-Object { $_ })
         $hPerimeterAncestors = @{}
         foreach ($oPerim in $hPerimData.Values) {
             foreach ($sKey in $oPerim.Ancestors.Keys) { $hPerimeterAncestors[$sKey] = $true }
@@ -475,6 +481,36 @@ function Export-ADSecurityReport {
         })
         $aDomainContexts = @(Get-DomainHierarchicalOrder -Items $aDomainsWithDepth)
 
+        # Per-perim domain contexts: each perimeter tab's sidebar
+        # Domain filter shows only that perim's in-scope domains
+        # (plus their ancestors as notFilterable rows for hierarchy
+        # context). Without this, every perim tab would mirror the
+        # forest-wide union list - the Filers tab would offer es.eu,
+        # de.eu, au.stago, ... even though no filer lives there.
+        foreach ($oPerim in $hPerimData.Values) {
+            $hPerimDisplay = @{}
+            foreach ($sDns in $oPerim.ScopeDomains.Keys) {
+                $sCur = $sDns
+                while ($sCur) {
+                    $hPerimDisplay[$sCur] = $true
+                    $sNext = $hFullDomainParent[$sCur]
+                    if (-not $sNext) { break }
+                    $sCur = $sNext
+                }
+            }
+            $aPerimDepthList = @($hPerimDisplay.Keys | ForEach-Object {
+                $sParent = $hFullDomainParent[$_]
+                if (-not $hPerimDisplay.ContainsKey($sParent)) { $sParent = '' }
+                [PSCustomObject]@{
+                    name          = $_
+                    depth         = (Get-DomainDepth $_ $hFullDomainParent)
+                    parent        = $sParent
+                    notFilterable = -not $oPerim.ScopeDomains.ContainsKey($_)
+                }
+            })
+            $oPerim.DomainContexts = @(Get-DomainHierarchicalOrder -Items $aPerimDepthList)
+        }
+
         # ===== SECURITY POLICIES (Password & Account Lockout) =====
         if ($IncludeSecurityPolicies) {
             # One tab per perimeter: each carries that perimeter's
@@ -490,18 +526,11 @@ function Export-ADSecurityReport {
             # sub-section per perim so every perim's users / computers
             # stay column-typed. GPO Catalog hosts the cross-domain
             # deduplicated per-GPO panels and the cross-tab WSUS pivot.
-            $sInventoryTab = "inventory"
+            $sInventoryTab = "Inventory"
             if ($sInventoryTab -notin $aTabs) { $aTabs += $sInventoryTab }
 
-            $sGPOTab = "gpo"
+            $sGPOTab = "GPO"
             if ($sGPOTab -notin $aTabs) { $aTabs += $sGPOTab }
-
-            # $sSecurityTab retained as the legacy single-tab id used
-            # by the Phase 2 emissions below. We override it inside
-            # the per-perim emission loops to route each section to
-            # the correct perim tab. In unscoped mode it stays the
-            # synthesised "security" tab throughout.
-            $sSecurityTab = @($hPerimData.Values)[0].Tab
 
             # Forest-wide map of unique GPO panels, keyed by
             # "<DisplayName>|<fingerprint>" so identical replicas across
@@ -801,10 +830,14 @@ function Export-ADSecurityReport {
                 # the Dead-GPO Empty-Target check below: total_enabled_recursive
                 # is 0 when an OU (and everything beneath it) holds no enabled
                 # account, so a GPO linked only to such OUs has no audience.
-                # Always emitted (now also in scoped mode): the OU Stats
-                # are per-domain and don't depend on perimeter membership,
-                # but every perim tab gets its own copy so the auditor
-                # has a consistent self-contained view per perimeter.
+                #
+                # Skipped in scoped mode: the per-perim Inventory tab
+                # already surfaces every in-scope user / computer with
+                # its ouPath column, so the per-domain OU stats become
+                # redundant noise. Dead-GPO Empty-Target degrades
+                # gracefully (downstream check falls back to an empty
+                # $hOUStatsForDomain lookup).
+                if (-not $bScoped) {
                 Write-Progress -Activity $sCallerName -Status "$sDomainName - OU Statistics..." `
                     -PercentComplete (Get-DomainStepProgress -Idx $iDomainIdx -Count $iDomainCount -Start 20 -End 65 -Step 0.15)
 
@@ -953,29 +986,28 @@ function Export-ADSecurityReport {
                     } | Sort-Object ou_path)
 
                     if ($aOUSummary.Count -gt 0) {
+                        $sId = "sec_$iTocIndex"; $iTocIndex++
                         # ou_dn is the cross-nav anchor (matched against linkedTo
                         # on the GPO Links table) and is hidden from the rendered
                         # grid; ou_path carries the human-readable label.
                         # total_enabled_recursive == 0 → row grayed out (the
                         # DisabledFlagProperty check treats 0 as "disabled"),
                         # surfacing OU branches with no enabled audience.
-                        foreach ($oPerim in $aPerimsForDomain) {
-                            $sId = "sec_$iTocIndex"; $iTocIndex++
-                            $aSectionFiles += ConvertTo-HTMLSectionV2 -Title "OU Statistics" -Id $sId `
-                                -Data $aOUSummary -Tab $oPerim.Tab -Context $sDomainName `
-                                -NameProperty 'ou_dn' -NoSort -DetectAllColumns `
-                                -DisabledFlagProperty 'total_enabled_recursive' `
-                                -HiddenCols @('ou_dn') `
-                                -RowFilters @(
-                                    @{ Label = 'Hide OUs with no enabled accounts (recursive)'; HideFlag = 'd'; Default = $true }
-                                )
-                            $iTotal += $aOUSummary.Count
-                        }
+                        $aSectionFiles += ConvertTo-HTMLSectionV2 -Title "OU Statistics" -Id $sId `
+                            -Data $aOUSummary -Tab $sInventoryTab -Context $sDomainName `
+                            -NameProperty 'ou_dn' -NoSort -DetectAllColumns `
+                            -DisabledFlagProperty 'total_enabled_recursive' `
+                            -HiddenCols @('ou_dn') `
+                            -RowFilters @(
+                                @{ Label = 'Hide OUs with no enabled accounts (recursive)'; HideFlag = 'd'; Default = $true }
+                            )
+                        $iTotal += $aOUSummary.Count
                         Write-Host "$sDomainName : $($aOUSummary.Count) OU statistic row(s) collected" -ForegroundColor Cyan
                     }
                 } catch {
                     Write-Warning "$sCallerName : $sDomainName / OU Statistics - $_"
                 }
+                } # end if (-not $bScoped) wrapping OU Statistics
 
                 # --- GPO Links & Security Settings ---
                 Write-Progress -Activity $sCallerName -Status "$sDomainName - GPO Links & Security Settings..." `
@@ -1770,21 +1802,23 @@ function Export-ADSecurityReport {
             -PercentComplete (Get-PhaseProgress -Start 93 -End 99 -Sub 0.0)
 
         # Build per-tab domain context map (forest hierarchy) for sidebar filters.
-        # Every perimeter tab gets the same domain hierarchy so the sidebar
-        # Domain filter works uniformly across perim tabs.
+        # Each perim tab gets its own context list - only that perim's
+        # in-scope domains plus their hierarchy ancestors, so the
+        # sidebar Domain dropdown stays honest about what the tab
+        # actually reports on.
         $hContexts = @{}
         $hContextLabels = @{}
-        if ($aDomainContexts -and $aDomainContexts.Count -gt 0) {
-            if ($IncludeSecurityPolicies) {
-                foreach ($oPerim in $hPerimData.Values) {
-                    $hContexts[$oPerim.Tab] = $aDomainContexts
+        if ($IncludeSecurityPolicies) {
+            foreach ($oPerim in $hPerimData.Values) {
+                if ($oPerim.DomainContexts -and $oPerim.DomainContexts.Count -gt 0) {
+                    $hContexts[$oPerim.Tab] = $oPerim.DomainContexts
                     $hContextLabels[$oPerim.Tab] = "Domain"
                 }
             }
-            if ($IncludeTimeSynchronization) {
-                $hContexts[$sTimeTab] = $aDomainContexts
-                $hContextLabels[$sTimeTab] = "Domain"
-            }
+        }
+        if ($IncludeTimeSynchronization -and $aDomainContexts -and $aDomainContexts.Count -gt 0) {
+            $hContexts[$sTimeTab] = $aDomainContexts
+            $hContextLabels[$sTimeTab] = "Domain"
         }
 
         $oSW.Stop()

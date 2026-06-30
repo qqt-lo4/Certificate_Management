@@ -36,18 +36,28 @@ function New-CLIDialogObjectBuilder {
 
     .NOTES
         Author  : Loïc Ade
-        Version : 1.0.0
+        Version : 1.1.0
 
         Dependencies:
             Get-Function                 (PSSomeCoreThings)
             Get-PaginatedArrayBoundaries (PSSomeDataThings)
+            Get-CLIObjectPropertyList    (PSSomeCLIThings)
 
         CHANGELOG:
+
+        Version 1.1.0 - 2026-06-17 - Loïc Ade
+            - The displayed property list now comes from Get-CLIObjectPropertyList
+              (registry-driven, with legacy Get-<Type>[-<Func>]_ObjectProperties
+              fallback), mirroring the dual-mode menu. The inline legacy property
+              function resolution was removed.
 
         Version 1.0.0 - 2026-06-14 - Loïc Ade
             - Initial release. Extracted unchanged from the Hotline_tool script
               (formerly New-ObjectDialogBuilder) into PSSomeCLIThings; the internal
               dialog build now calls Get-CLIDialogObject.
+            - Dual-mode menu with fallback: the object menu comes from the registry
+              (New-CLIDialogMenuFromRegistry) when it yields rows, otherwise from the
+              legacy Get-<Type>_ProjectMenu. No registered button => legacy behaviour.
     #>
     Param(
         [Parameter(Mandatory, Position = 0)]
@@ -60,6 +70,10 @@ function New-CLIDialogObjectBuilder {
     $sType = $sFriendlyTypeName.Replace(" ", "")
     $sFriendlyTypeName = $sFriendlyTypeName.Replace("_", " ")
     $sFunction = $FunctionFriendlyName.Replace(" ", "")
+    # The menu uses the requested view (empty for the base view), like the legacy
+    # menu resolution below - NOT the default property that $sFunction is reassigned
+    # to further down (that default only drives properties/content).
+    $sMenuFunction = $sFunction
     $f = Get-Function "Get-$sType`_ObjectName"
     $sHeaderPrefix = if ($f) {
         . $f $Object
@@ -74,21 +88,6 @@ function New-CLIDialogObjectBuilder {
         $sHeaderPrefix + " ($FunctionFriendlyName)"
     } else {
         $sHeaderPrefix + " ($sFriendlyTypeName)"
-    }
-    $fObjectProperties = if ($sFunction) {
-        $f = Get-Function "Get-$sType-$sFunction`_ObjectProperties"
-        if ($f) {
-            $f
-        } else {
-            $f = Get-Function "Get-$sFunction`_ObjectProperties"
-            if ($f) {
-                $f
-            } else {
-                Get-Function "Get-$sType`_ObjectProperties"
-            }
-        }
-    } else {
-        Get-Function "Get-$sType`_ObjectProperties"
     }
     $fObjectMenu = if ($sFunction) {
         $f = Get-Function "Get-$sFunction`_ProjectMenu"
@@ -116,8 +115,21 @@ function New-CLIDialogObjectBuilder {
     } else {
         Get-Function "Get-$sType`_ObjectContent"
     }
-    $aObjectProperties = if ($fObjectProperties) { . $fObjectProperties $Object } else { $null }
-    $oObjectMenu = if ($fObjectMenu) { . $fObjectMenu $Object } else { $null }
+    # Property list comes from the registry (with legacy Get-<Type>[-<Func>]_ObjectProperties
+    # fallback) via the same view token used for the menu.
+    $aObjectProperties = Get-CLIObjectPropertyList -Object $Object -Function $sMenuFunction
+    # Dual mode with fallback (no concatenation, to avoid duplicates): use the
+    # registry-driven menu when it produces rows, otherwise fall back to the legacy
+    # Get-<Type>_ProjectMenu. A type is therefore either fully registry-driven or
+    # fully legacy; with no registered button the behaviour is the legacy one.
+    $oRegistryMenu = New-CLIDialogMenuFromRegistry -Object $Object -Function $sMenuFunction
+    $oObjectMenu = if (@($oRegistryMenu).Count -gt 0) {
+        $oRegistryMenu
+    } elseif ($fObjectMenu) {
+        . $fObjectMenu $Object
+    } else {
+        $null
+    }
     $oObjectContent = if ($fObjectContent) { . $fObjectContent $Object } else { $null }
     $bPaginatedDialog = ($oObjectContent -and ($oObjectContent.Value.Count -gt $ItemsPerPage))
 
@@ -129,7 +141,7 @@ function New-CLIDialogObjectBuilder {
         Menu = $oObjectMenu
         PaginatedDialog = $bPaginatedDialog
         Functions = @{
-            ObjectProperties = $fObjectProperties
+            ObjectProperties = $null   # property list now comes from Get-CLIObjectPropertyList
             ObjectContent = $fObjectContent
             Menu = $fObjectMenu
         }

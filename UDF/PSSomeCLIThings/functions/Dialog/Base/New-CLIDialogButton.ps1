@@ -277,23 +277,35 @@
         [switch]$AddNewLine,
         [int]$Underline = -1,
         [switch]$NoSpace,
+        # Disables the "&" accelerator handling. Use for buttons whose text is data
+        # (e.g. table rows) where "&" must stay a literal character.
+        [switch]$NoAccelerator,
         [string]$Name
     )
     $sText = $Text
-    if ($sText.Contains("&")) {
+    $kKeyboard = $Keyboard
+    if ((-not $NoAccelerator) -and $sText.Contains("&")) {
         $iAmpersand = $sText.IndexOf("&")
-        $sText = $sText.Remove($iAmpersand, 1)
-        $sLetter = $sText[$iAmpersand..$iAmpersand][0].ToString().ToUpper()
-        $kKeyboard = [System.Enum]::Parse([System.ConsoleKey], $sLetter)
-        $sText = $sText | Set-StringUnderline -Position $iAmpersand
+        $sCandidate = $sText.Remove($iAmpersand, 1)
+        $sLetter = if ($iAmpersand -lt $sCandidate.Length) { $sCandidate[$iAmpersand].ToString().ToUpper() } else { "" }
+        # [Enum]::Parse in a try/catch (the non-generic TryParse(Type,..) overload
+        # does not exist on .NET Framework / PowerShell 5.1).
+        $kParsed = $null
+        if ($sLetter) {
+            try { $kParsed = [System.Enum]::Parse([System.ConsoleKey], $sLetter) } catch { $kParsed = $null }
+        }
+        if ($null -ne $kParsed) {
+            # "&" marks an accelerator: drop it and underline the shortcut character.
+            $sText = $sCandidate | Set-StringUnderline -Position $iAmpersand
+            $kKeyboard = $kParsed
+        }
+        # else: the char after "&" is not a usable key (e.g. punctuation in data),
+        # so keep the text literal (with the "&") and assign no shortcut.
     } elseif ($Underline -ge 0) {
         if ($Underline -ge $Text.Length) {
             throw [System.ArgumentOutOfRangeException] "Can't underline a character greater than string length"
         }
         $sText = $sText | Set-StringUnderline -Position $Underline
-        $kKeyboard = $Keyboard
-    } else {
-        $kKeyboard = $Keyboard
     }
     $hResult = @{
         Type = "button"

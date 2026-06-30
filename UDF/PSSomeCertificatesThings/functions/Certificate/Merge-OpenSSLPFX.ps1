@@ -69,9 +69,15 @@
 
 .NOTES
     Author  : Loïc Ade
-    Version : 1.1.0
+    Version : 1.2.0
 
     CHANGELOG:
+
+    Version 1.2.0 - 2026-06-21 - Loïc Ade
+        - Passwords passed to OpenSSL via environment variables (-passout/-passin env:),
+          so special characters such as " and $ survive Windows PowerShell 5.1 native-argument
+          quoting (which corrupted command-line "pass:" values). Also keeps the password out
+          of the visible process command line.
 
     Version 1.1.0 - 2026-04-26 - Loïc Ade
         - Added AutoChain parameter set (-CertificateFiles) which delegates chain
@@ -209,15 +215,21 @@
         } else {
             $aOpenSSLArgs += @("-keypbe", "NONE", "-certpbe", "NONE", "-nomaciter")
         }
-        $sPFXPass = if ($PFXPassword) {
+        # Pass passwords to OpenSSL through environment variables (-pass*=env:NAME, OpenSSL's
+        # own pass-source syntax) rather than on the command line (pass:...): Windows PowerShell
+        # 5.1 mangles native-command arguments that contain double quotes, which would corrupt
+        # the password. The literal string "env:PSCERT_PFXOUT" is passed verbatim (NO leading $)
+        # so OpenSSL reads the value from the environment; the env vars are cleared in the
+        # finally block (this also keeps the password out of the visible command line).
+        $env:PSCERT_PFXOUT = if ($PFXPassword) {
             [System.Runtime.InteropServices.Marshal]::PtrToStringAuto([System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($PFXPassword))
         } else {
             ""
         }
-        $aOpenSSLArgs += @("-passout", "pass:$sPFXPass", "-inkey", $PrivateKey)
+        $aOpenSSLArgs += @("-passout", "env:PSCERT_PFXOUT", "-inkey", $PrivateKey)
         if ($KeyPassword) {
-            $sKeyPass = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto([System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($KeyPassword))
-            $aOpenSSLArgs += @("-passin", "pass:$sKeyPass")
+            $env:PSCERT_PFXKEYIN = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto([System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($KeyPassword))
+            $aOpenSSLArgs += @("-passin", "env:PSCERT_PFXKEYIN")
         }
         $aOpenSSLArgs += @("-out", $OutPFXFile, "-in", $sLeafPath)
         if ($sChainPath -ne "") {
@@ -241,6 +253,8 @@
         Write-Verbose -Message ("openssl " + ([System.String]::Join(" ", $aOpenSSLArgs)))
         &$openssl $aOpenSSLArgs
     } finally {
+        Remove-Item Env:\PSCERT_PFXOUT -ErrorAction SilentlyContinue
+        Remove-Item Env:\PSCERT_PFXKEYIN -ErrorAction SilentlyContinue
         foreach ($p in $aTempFiles) {
             if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue }
         }

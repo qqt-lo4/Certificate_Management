@@ -61,9 +61,10 @@ function Invoke-CLIDialog {
         multi-level menu systems and wizards.
 
     .PARAMETER FunctionToRunOnValue
-        A function to call when a Value-type result is returned in Execute mode. The function
-        receives the selected value and should return a DialogResult object. Used for nested
-        menus, drill-down interfaces, and multi-step wizards. Only applicable with -Execute.
+        A function (FunctionInfo) or a scriptblock/closure to call when a Value-type result is
+        returned in Execute mode. It receives the selected value and should return a
+        DialogResult object. Used for nested menus, drill-down interfaces, and multi-step
+        wizards. Only applicable with -Execute.
 
     .PARAMETER Object
         The object to pass as argument to scriptblock-type buttons when they are executed.
@@ -144,7 +145,7 @@ function Invoke-CLIDialog {
         Module: CLIDialog
         Author: Loïc Ade
         Created: 2025-10-20
-        Version: 1.1.0
+        Version: 1.2.0
         Dependencies: New-CLIDialog, New-DialogResultAction, New-DialogResultScriptblock, New-DialogResultValue, Invoke-Pause
 
         This function is a high-level wrapper that simplifies dialog invocation and handles common
@@ -192,6 +193,11 @@ function Invoke-CLIDialog {
 
         CHANGELOG:
 
+        Version 1.2.0 - 2026-06-18 - Loïc Ade
+            - FunctionToRunOnValue now accepts a scriptblock/closure as well as a
+              FunctionInfo (parameter type relaxed to [object]), so callers can route a
+              selected value through a closure (e.g. open it in a given view).
+
         Version 1.1.0 - 2026-03-20 - Loïc Ade
             - Corrected : Object result value property returns now selected
                items when checkboxes were used, or form result if form is valid
@@ -225,7 +231,8 @@ function Invoke-CLIDialog {
         [ValidateSet("Right", "Left")]
         [string]$ErrorsPropertiesAlign = "Right",
         [switch]$Execute,
-        [System.Management.Automation.FunctionInfo]$FunctionToRunOnValue,
+        # A FunctionInfo or a scriptblock/closure; invoked with the selected value.
+        [object]$FunctionToRunOnValue,
         [object]$Object,
         [switch]$DontSpaceAfterDialog
     )

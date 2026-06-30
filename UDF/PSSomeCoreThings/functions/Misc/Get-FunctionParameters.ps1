@@ -27,6 +27,12 @@
         - Masked: Replace with '***SECURE***'
         - Removed: Exclude from results
         - Base64: Convert to Base64-encoded string
+
+    .PARAMETER Simple
+        Skip parameter-set discovery and AST default-value extraction. Returns
+        $PSBoundParameters of the caller, transformed by Remove/Rename and the
+        SwitchParameter/SecureString conversions. Use when the caller has no
+        parameter sets and does not rely on default values being picked up.
     
     .EXAMPLE
         function Invoke-APICall {
@@ -92,13 +98,15 @@
     Param(
         [Parameter(Position = 0)]
         [string[]]$RemoveParam,
-        
+
         [Parameter(Position = 1)]
         [hashtable]$RenameParam = @{},
 
         [Parameter()]
         [ValidateSet("PlainText", "Masked", "Removed", "Base64")]
-        [string]$SecureStringHandling = "PlainText"
+        [string]$SecureStringHandling = "PlainText",
+
+        [switch]$Simple
     )
     
     Begin {
@@ -230,44 +238,56 @@
         
         # Get the calling function's invocation info
         $parentInvocation = (Get-PSCallStack)[1].InvocationInfo
-        
+
         # Get the bound parameters from the caller
         $CallerBoundParameters = $parentInvocation.BoundParameters
-        
-        # Determine which parameter set is being used
-        $sParameterSetName = Get-ParameterSetName -Invocation $parentInvocation.MyCommand -BoundParameters $CallerBoundParameters
+
+        # -Simple skips parameter-set detection and AST default-value extraction.
+        # Cheap path for wrappers that only need to forward what the caller actually
+        # passed; common params are dropped explicitly here because $PSBoundParameters
+        # never contains them when a parameter set isn't computed first.
+        if (-not $Simple) {
+            $sParameterSetName = Get-ParameterSetName -Invocation $parentInvocation.MyCommand -BoundParameters $CallerBoundParameters
+        }
     }
-    
+
     Process {
         $hResultAPIParameters = @{}
-        $aParameterSet = $parentInvocation.MyCommand.ParameterSets | Where-Object { $_.Name -eq $sParameterSetName }
-        
-        # Iterate through all parameters in the active parameter set
-        foreach($parameter in $aParameterSet.Parameters.GetEnumerator()) {
-            try {
-                $key = $parameter.Name
-                $value = $null
-                
-                # PRIORITY 1: Check if parameter was explicitly passed
-                if($CallerBoundParameters.ContainsKey($key)) {
-                    $value = $CallerBoundParameters[$key]
-                }
-                # PRIORITY 2: Extract default value from AST
-                elseif ($null -ne $parentInvocation.MyCommand.ScriptBlock) {
-                    $defaultValue = Get-ParameterDefaultValue -ScriptBlock $parentInvocation.MyCommand.ScriptBlock -ParameterName $key
-                    if ($null -ne $defaultValue) {
-                        $value = $defaultValue
+
+        if ($Simple) {
+            foreach ($sKey in $CallerBoundParameters.Keys) {
+                $hResultAPIParameters[$sKey] = $CallerBoundParameters[$sKey]
+            }
+        } else {
+            $aParameterSet = $parentInvocation.MyCommand.ParameterSets | Where-Object { $_.Name -eq $sParameterSetName }
+
+            # Iterate through all parameters in the active parameter set
+            foreach($parameter in $aParameterSet.Parameters.GetEnumerator()) {
+                try {
+                    $key = $parameter.Name
+                    $value = $null
+
+                    # PRIORITY 1: Check if parameter was explicitly passed
+                    if($CallerBoundParameters.ContainsKey($key)) {
+                        $value = $CallerBoundParameters[$key]
+                    }
+                    # PRIORITY 2: Extract default value from AST
+                    elseif ($null -ne $parentInvocation.MyCommand.ScriptBlock) {
+                        $defaultValue = Get-ParameterDefaultValue -ScriptBlock $parentInvocation.MyCommand.ScriptBlock -ParameterName $key
+                        if ($null -ne $defaultValue) {
+                            $value = $defaultValue
+                        }
+                    }
+
+                    # Only add if we have a value
+                    if($null -ne $value) {
+                        #if($value -ne ($null -as $parameter.ParameterType)) {
+                            $hResultAPIParameters[$key] = $value
+                        #}
                     }
                 }
-                
-                # Only add if we have a value
-                if($null -ne $value) {
-                    #if($value -ne ($null -as $parameter.ParameterType)) {
-                        $hResultAPIParameters[$key] = $value
-                    #}
-                }
+                finally {}
             }
-            finally {}
         }
         
         # Convert types and apply transformations
@@ -326,174 +346,3 @@
         return $hNewResultAPIParameters
     }
 }
-
-# function Get-FunctionParameters {
-#     # based on https://gist.github.com/Jaykul/72f30dce2cca55e8cd73e97670db0b09/
-#     Param(
-#         [Parameter(Position = 0)]
-#         [string[]]$RemoveParam,
-        
-#         [Parameter(Position = 1)]
-#         [hashtable]$RenameParam = @{},  # Nouveau paramètre
-
-#         [ValidateSet("Hashtable", "Json", "PSCustomObject", "QueryString")]
-#         [string]$OutputFormat = "Hashtable",
-#         [Parameter()]
-#         [ValidateSet("PlainText", "Masked", "Removed", "Base64")]
-#         [string]$SecureStringHandling = "PlainText"
-#     )
-#     Begin {
-#         function ConvertFrom-SecureStringToPlainText {
-#             param(
-#                 [Parameter(Mandatory)]
-#                 [System.Security.SecureString]$SecureString
-#             )
-            
-#             # Méthode PSCredential - fonctionne sur TOUTES les plateformes
-#             try {
-#                 $credential = New-Object System.Management.Automation.PSCredential("dummy", $SecureString)
-#                 return $credential.GetNetworkCredential().Password
-#             }
-#             catch {
-#                 Write-Warning "Erreur de conversion SecureString: $_"
-#                 return $null
-#             }
-#         }
-
-#         function Get-ParameterSetName {
-#             Param(
-#                 [Parameter(Mandatory)]
-#                 [object]$Invocation,
-#                 [Parameter(Mandatory)]
-#                 [hashtable]$BoundParameters
-#             )
-#             $aParameterSetsResults = @()
-#             foreach ($parameterset in $Invocation.ParameterSets) {
-#                 $oCompareLeft = ([string[]]$BoundParameters.Keys | Where-Object { 
-#                     ($_ -notin [System.Management.Automation.Cmdlet]::CommonParameters) -and `
-#                     ($_ -notin [System.Management.Automation.Cmdlet]::OptionalCommonParameters)
-#                 })
-#                 # Need to check parameters on right that are not mandatory, and remove them from right if not specified on left
-#                 $oCompareRight = ($parameterset.Parameters | Where-Object { $_.IsMandatory -or (($oCompareLeft -ne $null) -and (-not $_.IsMandatory) -and ($_.name -in $oCompareLeft)) }).Name
-#                 # Compare
-#                 # if (-not ((($oCompareLeft -eq $null) -and ($oCompareRight -ne $null)) -or `
-#                 #     (($oCompareLeft -ne $null) -and ($oCompareRight -eq $null)))) {
-#                 #     if (($oCompareLeft -eq $null) -and ($oCompareRight -eq $null)) {
-#                 #         $aParameterSetsResults += $parameterset.Name
-#                 #     } else {
-#                 #         if ((Compare-Object $oCompareLeft $oCompareRight) -eq $null) {
-#                 #             $aParameterSetsResults += $parameterset.Name
-#                 #         }    
-#                 #     }
-#                 # }
-#                 $bothNull = ($null -eq $oCompareLeft) -and ($null -eq $oCompareRight)
-#                 $bothExist = ($null -ne $oCompareLeft) -and ($null -ne $oCompareRight)
-#                 if ($bothNull) {
-#                     $aParameterSetsResults += $parameterset.Name
-#                 } elseif ($bothExist) {
-#                     if ((Compare-Object $oCompareLeft $oCompareRight) -eq $null) {
-#                         $aParameterSetsResults += $parameterset.Name
-#                     }
-#                 }
-#             }
-#             if ($aParameterSetsResults.Count -eq 1) {
-#                 $sResult = $aParameterSetsResults[0]
-#                 return $sResult
-#             } else {
-#                 return ($Invocation.ParameterSets | Where-Object { $_.IsDefault -eq $true }).Name
-#             }
-#         }
-#         $parentInvocation = (Get-PSCallStack)[1].InvocationInfo
-#         $BoundParameters = (Get-PSCallStack)[1].InvocationInfo.BoundParameters
-#         $sParameterSetName = Get-ParameterSetName -Invocation $parentInvocation.MyCommand -BoundParameters $BoundParameters -Verbose
-#     }
-#     Process {
-#         $hResultAPIParameters = @{}
-#         $aParameterSet = $parentInvocation.MyCommand.ParameterSets | Where-Object { $_.Name -eq $sParameterSetName }
-#         foreach($parameter in $aParameterSet.Parameters.GetEnumerator()) {
-#             try {
-#                 $key = $parameter.Name
-#                 $value = Get-Variable -Name $key -ValueOnly -ErrorAction Ignore -Scope 1
-#                 if($null -ne $value) {
-#                     if($value -ne ($null -as $parameter.ParameterType)) {
-#                         $hResultAPIParameters[$key] = $value
-#                     }
-#                 }
-#                 if($BoundParameters.ContainsKey($key)) {
-#                     $hResultAPIParameters[$key] = $BoundParameters[$key]
-#                 }
-#             }
-#             finally {}
-#         }
-#         # convert types
-#         $hNewResultAPIParameters = @{}
-#         foreach ($item in $hResultAPIParameters.Keys) {
-#             $newKey = if ($RenameParam.ContainsKey($item)) { $RenameParam[$item] } else { $item }
-#             $itemValue = $hResultAPIParameters[$item]
-#             if ($null -eq $itemValue) {
-#                 $hNewResultAPIParameters[$item] = $null
-#             } else {
-#                 switch ($itemValue.GetType().Name) {
-#                     "SwitchParameter" {
-#                         $hNewResultAPIParameters[$newKey] = [bool]$itemValue
-#                     }
-#                     "SecureString" {
-#                         switch ($SecureStringHandling) {
-#                             "PlainText" { # Convertir en texte clair pour l'API
-#                                 $plainText = ConvertFrom-SecureStringToPlainText -SecureString $itemValue
-#                                 if ($null -ne $plainText) {
-#                                     $hNewResultAPIParameters[$newKey] = $plainText
-#                                 }
-#                             }
-#                             "Masked" { # Remplacer par une valeur masquée
-#                                 $hNewResultAPIParameters[$newKey] = "***SECURE***"
-#                             }
-#                             "Removed" { # Ne pas inclure dans les paramètres de sortie, en ne faisant rien
-                                
-#                             }
-#                             "Base64" { # Convertir en Base64 
-#                                 $plainText = ConvertFrom-SecureStringToPlainText -SecureString $itemValue
-#                                 if ($null -ne $plainText) {
-#                                     $bytes = [System.Text.Encoding]::UTF8.GetBytes($plainText)
-#                                     $hNewResultAPIParameters[$newKey] = [System.Convert]::ToBase64String($bytes)
-#                                 }
-#                             }
-#                         }
-#                     }
-#                     default {
-#                         $hNewResultAPIParameters[$newKey] = $itemValue
-#                     }
-#                 }    
-#             }
-#         }
-#         # remove all useless parameters
-#         foreach ($item in $RemoveParam) {
-#             $hNewResultAPIParameters.Remove($item) | Out-Null
-#         }
-#     }
-#     End {
-#         switch ($OutputFormat) {
-#             "hashtable" {
-#                 return $hNewResultAPIParameters
-#             }
-#             "Json" {
-#                 return $hNewResultAPIParameters | ConvertTo-Json
-#             }
-#             "PSCustomObject" {
-#                 return [pscustomobject]$hNewResultAPIParameters
-#             }
-#             "QueryString" {
-#                 $queryParts = @()
-#                 foreach ($param in $hNewResultAPIParameters.GetEnumerator()) {
-#                     if ($null -ne $param.Value) {
-#                         $key = [System.Web.HttpUtility]::UrlEncode($param.Key)
-#                         $value = [System.Web.HttpUtility]::UrlEncode($param.Value.ToString())
-#                         $queryParts += "$key=$value"
-#                     }
-#                 }
-#                 return $queryParts -join '&'
-#             }
-#         }
-#     }
-# }
-

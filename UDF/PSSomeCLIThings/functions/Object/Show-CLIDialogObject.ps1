@@ -46,7 +46,7 @@ function Show-CLIDialogObject {
 
     .NOTES
         Author  : Loïc Ade
-        Version : 1.0.0
+        Version : 1.1.0
 
         Dependencies: Get-Function (PSSomeCoreThings)
 
@@ -81,7 +81,13 @@ function Show-CLIDialogObject {
                                                           hierarchy, first match wins).
 
             Get-<Type>-<Func>_ObjectContent               paginated content table
-            Get-<Type>_ObjectContent                         (fallback)
+            Get-<Type>_ObjectContent                         (fallback). Its descriptor
+                                                          may carry OnSelectFunction = a
+                                                          view name; selecting a row then
+                                                          opens that value in that view
+                                                          (resolved against the value's
+                                                          own type) - no per-type Invoke
+                                                          function needed.
 
             Get-<Func>_ProjectMenu                        per-object menu
             Get-<Type>-<Func>_ProjectMenu                   (fallbacks, with-function)
@@ -91,15 +97,25 @@ function Show-CLIDialogObject {
                                                           when -Function is omitted.
 
             Invoke-<Type>-<Func>_FunctionOnObject         action run on a selected
-            Invoke-<Type>_FunctionOnObject                  value (fallback). When none
-                                                          exists, selecting a value
-                                                          recurses into Show-CLIDialogObject.
+            Invoke-<Type>_FunctionOnObject                  value (fallbacks). When none
+                                                          exists, the content descriptor's
+                                                          OnSelectFunction (above) is used
+                                                          if set; otherwise selecting a
+                                                          value recurses into
+                                                          Show-CLIDialogObject (base view).
 
         In addition, the host project registers the default footer menu once with
         Set-CLIDialogDefaultMenu { ... } (e.g. Back / Search / Exit buttons), and may
         configure colors with Set-CLIDialogTheme.
 
         CHANGELOG:
+
+        Version 1.1.0 - 2026-06-18 - Loïc Ade
+            - The action run on a selected content value can now be declared by the
+              content descriptor itself via OnSelectFunction (the view to open the
+              selected value in), resolved after Invoke-<Type>[-<Func>]_FunctionOnObject
+              and before the default base-view recursion. Lets a content view route its
+              rows to a view (e.g. "All Info") without a per-type Invoke function.
 
         Version 1.0.0 - 2026-06-14 - Loïc Ade
             - Initial release. Extracted from the Hotline_tool script (formerly
@@ -141,6 +157,17 @@ function Show-CLIDialogObject {
             . $f $oObject
         }
     }
+    $oDialogBuilder = if ($Function) {
+        New-CLIDialogObjectBuilder -Object $oObject -Function $Function -ItemsPerPage $ItemsPerPage
+    } else {
+        New-CLIDialogObjectBuilder -Object $oObject -ItemsPerPage $ItemsPerPage
+    }
+    # Action run on a selected content value, resolved in order:
+    #   1. Invoke-<Type>-<Func>_FunctionOnObject, then Invoke-<Type>_FunctionOnObject.
+    #   2. The content descriptor's OnSelectFunction: open the selected value in that view
+    #      (Show-CLIDialogObject $value <view>) - the view is resolved against the value's
+    #      own type, so no per-type Invoke function is needed.
+    #   3. Default: recurse into this function (the value's base view).
     $f = Get-Function "Invoke-$sType-$sFunction`_FunctionOnObject"
     $fFunctionOnValue = if ($f) {
         $f
@@ -148,16 +175,13 @@ function Show-CLIDialogObject {
         $f = Get-Function "Invoke-$sType`_FunctionOnObject"
         if ($f) {
             $f
+        } elseif ($oDialogBuilder.ObjectContent -and $oDialogBuilder.ObjectContent.OnSelectFunction) {
+            $sOnSelectFunction = $oDialogBuilder.ObjectContent.OnSelectFunction
+            { Show-CLIDialogObject $args[0] $sOnSelectFunction }.GetNewClosure()
         } else {
-            $sFunctionName = $MyInvocation.InvocationName.ToString()
             $oPSStack = Get-PSCallStack
             Get-Function $oPSStack[0].Command.ToString()
         }
-    }
-    $oDialogBuilder = if ($Function) {
-        New-CLIDialogObjectBuilder -Object $oObject -Function $Function -ItemsPerPage $ItemsPerPage
-    } else {
-        New-CLIDialogObjectBuilder -Object $oObject -ItemsPerPage $ItemsPerPage
     }
     while ($true) {
         $oCurrentPageDialog = $oDialogBuilder.GetDialog()

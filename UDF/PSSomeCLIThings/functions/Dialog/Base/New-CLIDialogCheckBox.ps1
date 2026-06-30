@@ -166,10 +166,12 @@ function New-CLIDialogCheckBox {
         [object]$Object,
         [switch]$AddNewLine,
         [int]$Underline = -1,
-        [switch]$NoSpace
+        [switch]$NoSpace,
+        # Disables "&" accelerator handling (for data text such as table rows).
+        [switch]$NoAccelerator
     )
     $sText = $Text
-    if ($sText.Contains("&")) {
+    if ((-not $NoAccelerator) -and $sText.Contains("&")) {
         $iAmpersand = $sText.IndexOf("&")
         $sText = $sText.Remove($iAmpersand, 1)
         $sText = $sText | Set-StringUnderline -Position $iAmpersand

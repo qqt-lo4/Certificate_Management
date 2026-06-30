@@ -111,7 +111,12 @@
 
     .NOTES
         Author  : Loïc Ade
-        Version : 1.1.0
+        Version : 1.2.0
+
+        1.2.0 (2026-06-16, Loïc Ade) - The per-identity disjunction
+                             now also matches distinguishedName, so a
+                             batch -Identity can resolve DNs. This lets
+                             Get-ADDNObject delegate to Get-ADObject.
 
         1.1.0 (2026-06-03, Loïc Ade) - -Identity now accepts
                              [string[]] so a single call can resolve
@@ -304,7 +309,7 @@
                 # foreach result to a bare string - without it,
                 # $aIdentityClauses[0] would return the first char.
                 $aIdentityClauses = @(foreach ($sId in $Identity) {
-                    "(|(sAMAccountName=$sId)(objectGUID=$sId)(objectSid=$sId)(cn=$sId)(name=$sId)(userPrincipalName=$sId))"
+                    "(|(sAMAccountName=$sId)(objectGUID=$sId)(objectSid=$sId)(cn=$sId)(name=$sId)(userPrincipalName=$sId)(distinguishedName=$sId))"
                 })
                 $sIdentityFilter = if ($aIdentityClauses.Count -eq 1) {
                     $aIdentityClauses[0]

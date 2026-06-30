@@ -81,7 +81,7 @@ function Export-ADTimeReport {
         $iTotal        = 0
         $iTocIndex     = 0
         $aSectionFiles = @()
-        $sTimeTab      = 'time'
+        $sTimeTab      = 'Time'
         $aTabs         = @($sTimeTab)
 
         # --- Forest enumeration --------------------------------------
