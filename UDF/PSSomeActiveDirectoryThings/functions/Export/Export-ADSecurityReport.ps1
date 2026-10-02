@@ -513,6 +513,14 @@ function Export-ADSecurityReport {
 
         # ===== SECURITY POLICIES (Password & Account Lockout) =====
         if ($IncludeSecurityPolicies) {
+            # Inventory leads: it defines the audit scope (the in-scope
+            # population per perimeter), which an assessor reviews before the
+            # per-perimeter security posture. Groups one (perim, objectclass)
+            # sub-section per perim so every perim's users / computers stay
+            # column-typed. Added before the perimeter tabs so it renders first.
+            $sInventoryTab = "Inventory"
+            if ($sInventoryTab -notin $aTabs) { $aTabs += $sInventoryTab }
+
             # One tab per perimeter: each carries that perimeter's
             # Default Password Policy / PSO / OU Stats / GPO Links /
             # WMI Filters per domain. The unscoped pseudo-perim is
@@ -522,13 +530,8 @@ function Export-ADSecurityReport {
                 if ($oPerim.Tab -notin $aTabs) { $aTabs += $oPerim.Tab }
             }
 
-            # Global tabs. Inventory groups one (perim, objectclass)
-            # sub-section per perim so every perim's users / computers
-            # stay column-typed. GPO Catalog hosts the cross-domain
-            # deduplicated per-GPO panels and the cross-tab WSUS pivot.
-            $sInventoryTab = "Inventory"
-            if ($sInventoryTab -notin $aTabs) { $aTabs += $sInventoryTab }
-
+            # GPO Catalog hosts the cross-domain deduplicated per-GPO panels
+            # and the cross-tab WSUS pivot; trailing global tab.
             $sGPOTab = "GPO"
             if ($sGPOTab -notin $aTabs) { $aTabs += $sGPOTab }
 

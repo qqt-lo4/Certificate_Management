@@ -1,4 +1,4 @@
-function Get-ADGroupPolicy {
+﻿function Get-ADGroupPolicy {
     <#
     .SYNOPSIS
         Retrieves Group Policy Objects from Active Directory.
@@ -66,8 +66,17 @@ function Get-ADGroupPolicy {
 
     .NOTES
         Author  : Loïc Ade
-        Version : 1.0.0
+$11.0.1
+        CHANGELOG:
 
+        Version 1.0.1 - 2026-09-07 - Loic Ade
+            - Corrected : -ResultSetSize was declared [AllowNull] without
+              parentheses, so PowerShell read it as a type constraint rather
+              than an attribute and bound the parameter to AllowNullAttribute.
+              Any call passing -ResultSetSize failed on argument transformation.
+
+        Version 1.0.0 - Loic Ade
+            - Initial release.
         1.0.0 (2026-04-12) - Initial version
     #>
     [CmdletBinding(DefaultParameterSetName = "Filter")]
@@ -99,7 +108,7 @@ function Get-ADGroupPolicy {
 
         [Parameter(ParameterSetName = "LdapFilter")]
         [Parameter(ParameterSetName = "Filter")]
-        [AllowNull][Int32]$ResultSetSize,
+        [AllowNull()][Int32]$ResultSetSize,
 
         [Parameter(ParameterSetName = "LdapFilter")]
         [Parameter(ParameterSetName = "Filter")]

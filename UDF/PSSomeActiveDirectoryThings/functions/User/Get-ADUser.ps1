@@ -1,4 +1,4 @@
-function Get-ADUser {
+﻿function Get-ADUser {
     <#
     .SYNOPSIS
         Searches for AD user objects
@@ -61,7 +61,17 @@ function Get-ADUser {
 
     .NOTES
         Author  : Loïc Ade
-        Version : 1.0.0
+$11.0.1
+        CHANGELOG:
+
+        Version 1.0.1 - 2026-09-07 - Loic Ade
+            - Corrected : -ResultSetSize was declared [AllowNull] without
+              parentheses, so PowerShell read it as a type constraint rather
+              than an attribute and bound the parameter to AllowNullAttribute.
+              Any call passing -ResultSetSize failed on argument transformation.
+
+        Version 1.0.0 - Loic Ade
+            - Initial release.
     #>
     [CmdletBinding(DefaultParameterSetName="Filter")]
     Param(
@@ -92,7 +102,7 @@ function Get-ADUser {
 
         [Parameter(ParameterSetName = "LdapFilter")]
         [Parameter(ParameterSetName = "Filter")]
-        [AllowNull][Int32]$ResultSetSize,
+        [AllowNull()][Int32]$ResultSetSize,
 
         [Parameter(ParameterSetName = "LdapFilter")]
         [Parameter(ParameterSetName = "Filter")]

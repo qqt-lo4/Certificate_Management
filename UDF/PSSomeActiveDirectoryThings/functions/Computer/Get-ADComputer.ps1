@@ -1,4 +1,4 @@
-function Get-ADComputer {
+﻿function Get-ADComputer {
     <#
     .SYNOPSIS
         Searches for AD computer objects
@@ -68,9 +68,14 @@ function Get-ADComputer {
 
     .NOTES
         Author  : Loïc Ade
-        Version : 2.0.0
-
+$12.0.1
         CHANGELOG:
+
+        Version 2.0.1 - 2026-09-07 - Loic Ade
+            - Corrected : -ResultSetSize was declared [AllowNull] without
+              parentheses, so PowerShell read it as a type constraint rather
+              than an attribute and bound the parameter to AllowNullAttribute.
+              Any call passing -ResultSetSize failed on argument transformation.
 
         Version 2.0.0 - 2026-06-15 - Loïc Ade
             - Rewritten as a thin wrapper around Get-ADObject -Computer (same model
@@ -110,7 +115,7 @@ function Get-ADComputer {
 
         [Parameter(ParameterSetName = "LdapFilter")]
         [Parameter(ParameterSetName = "Filter")]
-        [AllowNull][Int32]$ResultSetSize,
+        [AllowNull()][Int32]$ResultSetSize,
 
         [Parameter(ParameterSetName = "LdapFilter")]
         [Parameter(ParameterSetName = "Filter")]

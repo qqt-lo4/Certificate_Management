@@ -22,9 +22,11 @@ function Get-CertificateTemplateDetails {
 
     .NOTES
         Author  : Loic Ade
-        Version : 1.0.0
+        Version : 1.1.0
 
         1.0.0 (2026-03-30) - Initial version
+        1.1.0 (2026-08-25) - Filter the container query to objectClass=pKICertificateTemplate so
+                             non-template child objects no longer surface as blank rows.
     #>
     [CmdletBinding()]
     Param(
@@ -146,7 +148,11 @@ function Get-CertificateTemplateDetails {
             'nTSecurityDescriptor'
         )
 
+        # Restrict to actual certificate templates: the container can also hold non-template
+        # child objects (e.g. the OID / enrollment leftovers), which otherwise surface as blank
+        # rows with no name. pKICertificateTemplate is the schema class for enterprise templates.
         $aTemplates = Get-ADContainerObjects -ContainerDN $sCertTemplatesDN -Properties $aProperties `
+            -LDAPFilter '(objectClass=pKICertificateTemplate)' `
             -SecurityMasks ([System.DirectoryServices.SecurityMasks]::Dacl)
 
         if ($NameFilter) {

@@ -38,9 +38,15 @@ function Export-PKIConfiguration {
 
     .NOTES
         Author  : Loic Ade
-        Version : 1.0.0
+        Version : 1.1.0
 
         1.0.0 (2026-03-30) - Initial version
+        1.1.0 (2026-08-25) - Migrate section rendering to ConvertTo-HTMLSectionV2 (client-side
+                             table build: column filters, resize/reorder, JSON/array cells).
+                             Same call shape - Title/Id/Data/Tab/Context/NameProperty/
+                             DetectAllColumns are all accepted by V2, behaviour unchanged.
+                             Issued Certificates sections now sorted by RequestID descending
+                             (most recently issued first).
     #>
     [CmdletBinding()]
     Param(
@@ -92,7 +98,7 @@ function Export-PKIConfiguration {
         if ($aEnrollmentServices.Count -gt 0) {
             $sId = "sec_$iTocIndex"
             $iTocIndex++
-            $sSectionFile = ConvertTo-HTMLSection -Title "Certificate Authorities" -Id $sId -Data $aEnrollmentServices `
+            $sSectionFile = ConvertTo-HTMLSectionV2 -Title "Certificate Authorities" -Id $sId -Data $aEnrollmentServices `
                 -Tab "Authorities" -NameProperty 'name' -DetectAllColumns
             $aSectionFiles += $sSectionFile
             $iTotal += $aEnrollmentServices.Count
@@ -110,7 +116,7 @@ function Export-PKIConfiguration {
         if ($aAllTemplates.Count -gt 0) {
             $sId = "sec_$iTocIndex"
             $iTocIndex++
-            $sSectionFile = ConvertTo-HTMLSection -Title "Certificate Templates (AD)" -Id $sId -Data $aAllTemplates `
+            $sSectionFile = ConvertTo-HTMLSectionV2 -Title "Certificate Templates (AD)" -Id $sId -Data $aAllTemplates `
                 -Tab "Templates" -NameProperty 'name' -DetectAllColumns
             $aSectionFiles += $sSectionFile
             $iTotal += $aAllTemplates.Count
@@ -137,7 +143,7 @@ function Export-PKIConfiguration {
             if ($aPublished.Count -gt 0) {
                 $sId = "sec_$iTocIndex"
                 $iTocIndex++
-                $sSectionFile = ConvertTo-HTMLSection -Title "Published Templates" -Id $sId -Data $aPublished `
+                $sSectionFile = ConvertTo-HTMLSectionV2 -Title "Published Templates" -Id $sId -Data $aPublished `
                     -Tab "Templates" -Context $sCAName -NameProperty 'name' -DetectAllColumns
                 $aSectionFiles += $sSectionFile
                 $iTotal += $aPublished.Count
@@ -164,8 +170,9 @@ function Export-PKIConfiguration {
             if ($aIssued.Count -gt 0) {
                 $sId = "sec_$iTocIndex"
                 $iTocIndex++
-                $sSectionFile = ConvertTo-HTMLSection -Title "Issued Certificates (last $MaxIssuedCerts)" -Id $sId -Data $aIssued `
-                    -Tab "Certificates" -Context $sCAName -NameProperty 'CommonName' -DetectAllColumns
+                $sSectionFile = ConvertTo-HTMLSectionV2 -Title "Issued Certificates (last $MaxIssuedCerts)" -Id $sId -Data $aIssued `
+                    -Tab "Certificates" -Context $sCAName -NameProperty 'CommonName' `
+                    -SortProperty @{ RequestID = 'DESC' } -DetectAllColumns
                 $aSectionFiles += $sSectionFile
                 $iTotal += $aIssued.Count
             }
@@ -188,7 +195,7 @@ function Export-PKIConfiguration {
                 if ($aData.Count -gt 0) {
                     $sId = "sec_$iTocIndex"
                     $iTocIndex++
-                    $sSectionFile = ConvertTo-HTMLSection -Title $oPKIType.Title -Id $sId -Data $aData `
+                    $sSectionFile = ConvertTo-HTMLSectionV2 -Title $oPKIType.Title -Id $sId -Data $aData `
                         -Tab "Authorities" -NameProperty 'subject' -DetectAllColumns
                     $aSectionFiles += $sSectionFile
                     $iTotal += $aData.Count

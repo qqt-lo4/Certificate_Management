@@ -111,7 +111,26 @@
 
     .NOTES
         Author  : Loïc Ade
-        Version : 1.2.0
+        Version : 1.2.1
+
+        1.2.1 (2026-07-10, Loïc Ade) - -SearchScope is now accepted on the
+                             Identity parameter set too, so a caller
+                             using the DN fast-path (single DN via
+                             -Identity, which binds DirectoryEntry to
+                             the DN) can restrict the search to Base
+                             and get just the entry itself rather than
+                             the default Subtree that pulls in every
+                             descendant (a user's ExchangeActiveSync
+                             devices, an OU's children, etc.). Two
+                             related SearchScope quirks fixed at the
+                             same time so passing Base actually works:
+                             the ValidateNotNullOrEmpty attribute
+                             rejected Base (enum value 0) as "empty"
+                             during parameter binding; and the truthy
+                             "if ($SearchScope)" guard also treated
+                             Base as falsy, silently skipping the
+                             assignment. Both switched to
+                             PSBoundParameters.ContainsKey checks.
 
         1.2.0 (2026-06-16, Loïc Ade) - The per-identity disjunction
                              now also matches distinguishedName, so a
@@ -167,7 +186,10 @@
 
         [Parameter(ParameterSetName = "LdapFilter")]
         [Parameter(ParameterSetName = "Filter")]
-        [ValidateNotNullOrEmpty()]
+        [Parameter(ParameterSetName = "Identity")]
+        # No ValidateNotNullOrEmpty: the enum value Base is 0, and that
+        # validator treats 0 as "empty", rejecting a legitimate scope
+        # choice at parameter binding time.
         [System.DirectoryServices.SearchScope]$SearchScope,
 
         [Parameter(ParameterSetName = "LdapFilter")]
@@ -374,7 +396,10 @@
         $ds = New-Object System.DirectoryServices.DirectorySearcher($de);
         if ($ResultSetSize) { $ds.SizeLimit = $ResultSetSize }
         if ($ResultPageSize) { $ds.PageSize = $ResultPageSize }
-        if ($SearchScope) { $ds.SearchScope = $SearchScope }
+        # ContainsKey rather than truthy: SearchScope::Base is enum value 0,
+        # which is falsy under "if ($SearchScope)" and would silently skip
+        # the assignment even when the caller passed Base explicitly.
+        if ($PSBoundParameters.ContainsKey('SearchScope')) { $ds.SearchScope = $SearchScope }
         if ($SearchBase) {
             if ($SearchBase -match "[A-Za-z]+://.+") {
                 $ds.SearchRoot = $SearchBase
@@ -383,10 +408,20 @@
             }
         }
         if ($PSBoundParameters.ContainsKey('SecurityMasks')) { $ds.SecurityMasks = $SecurityMasks }
-        # In Path mode, the DirectoryEntry is bound to a specific DN. The default
-        # subtree search would return its children — force Base scope so the
-        # entry itself is returned, with a wildcard filter so it matches.
-        if ($PSCmdlet.ParameterSetName -eq "Path" -and -not $SearchScope) {
+        # In -Path mode AND in the DN fast-path of -Identity ($bDN, single DN
+        # that binds DirectoryEntry directly to the DN via $sPath): the
+        # default Subtree scope would return the entry plus every child
+        # underneath (a user's ExchangeActiveSyncDevices, an OU's children).
+        # Force Base so only the bound entry is returned - unless the caller
+        # explicitly asked for a scope, in which case they know what they
+        # want (e.g. Subtree to walk descendants).
+        # Batch -Identity ($bDN=false) is NOT included: it binds SearchRoot
+        # to the domain naming context and relies on a DN-matching filter
+        # to find each entry under it. Base scope there would only match
+        # the root itself and drop every member. Callers who force Base on
+        # a batch get an empty result (their choice, but useless).
+        if (-not $PSBoundParameters.ContainsKey('SearchScope') `
+            -and ($PSCmdlet.ParameterSetName -eq "Path" -or $bDN)) {
             $ds.SearchScope = [System.DirectoryServices.SearchScope]::Base
         }
         if ($Properties) {
