@@ -29,6 +29,10 @@ function Set-RDSCertificate {
     .PARAMETER Roles
     Broker mode only. Subset of RDGateway, RDPublishing, RDRedirector, RDWebAccess. Defaults to all 4.
 
+    .PARAMETER Credential
+    Broker mode: administrator credential used to open the broker's Server Manager workflow
+    endpoint (single hop from the caller). Current user when omitted.
+
     .OUTPUTS
     [pscustomobject] with DeploymentMode, Success, RoleResults[].
 
@@ -37,9 +41,13 @@ function Set-RDSCertificate {
 
     .NOTES
         Author  : Loïc Ade
-        Version : 1.0.0
+        Version : 1.1.0
 
         CHANGELOG:
+
+        Version 1.1.0 - 2026-10-25 - Loïc Ade
+            - Added -Credential (Broker mode)
+            - The PFX password is checked locally and its thumbprint is used to verify the result
 
         Version 1.0.0 - 2026-05-18 - Loïc Ade
             - Initial release
@@ -57,11 +65,26 @@ function Set-RDSCertificate {
         [ValidateSet('Broker','Standalone')]
         [string]$DeploymentMode,
         [ValidateSet('RDGateway','RDPublishing','RDRedirector','RDWebAccess')]
-        [string[]]$Roles
+        [string[]]$Roles,
+        [pscredential]$Credential
     )
 
     if (-not (Test-Path -LiteralPath $PfxPath -PathType Leaf)) {
         throw "PFX file not found: $PfxPath"
+    }
+
+    # Thumbprint of the PFX, used by the Broker backend to verify the result
+    $sThumbprint = $null
+    $pBSTR = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($Password)
+    try {
+        $oPfx = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2(
+            (Resolve-Path -LiteralPath $PfxPath).ProviderPath, [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($pBSTR))
+        $sThumbprint = $oPfx.Thumbprint
+        $oPfx.Reset()
+    } catch {
+        throw "Cannot open the PFX with the provided password: $_"
+    } finally {
+        [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($pBSTR)
     }
 
     if (-not $DeploymentMode) {
@@ -79,7 +102,8 @@ function Set-RDSCertificate {
                 if (-not $Roles -or $Roles.Count -eq 0) {
                     $Roles = @('RDGateway','RDPublishing','RDRedirector','RDWebAccess')
                 }
-                Set-RDSBrokerCertificate -Session $Session -PfxPath $sRemoteTemp -Password $Password -Roles $Roles
+                Set-RDSBrokerCertificate -Session $Session -PfxPath $sRemoteTemp -Password $Password -Roles $Roles `
+                    -Credential $Credential -ExpectedThumbprint $sThumbprint
             }
             'Standalone' {
                 if ($Roles -and $Roles.Count -gt 0) {

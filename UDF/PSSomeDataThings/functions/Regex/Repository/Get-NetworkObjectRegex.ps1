@@ -53,7 +53,12 @@ function Get-NetworkObjectRegex {
 
     .NOTES
         Author  : Loïc Ade
-        Version : 1.0.0
+        Version : 1.1.0
+
+        1.1.0 (2026-10-05)
+            - -FullLine anchors the WHOLE alternation: "^A|B|C|D$" anchored the network pattern
+              at the start only and the DNS one at the end only, so "10.0.0.1 and anything" (an
+              IP followed by text) or "anything srv01" matched as a full line
     #>
     Param(
         [switch]$IP,
@@ -95,7 +100,7 @@ function Get-NetworkObjectRegex {
     $sResult = $patterns -join "|"
 
     if ($FullLine) {
-        return "^$sResult$"
+        return "^(?:$sResult)$"
     } else {
         return $sResult
     }

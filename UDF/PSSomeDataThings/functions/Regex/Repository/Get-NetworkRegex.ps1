@@ -35,7 +35,12 @@ function Get-NetworkRegex {
 
     .NOTES
         Author  : Loïc Ade
-        Version : 1.1.0
+        Version : 1.2.0
+
+        1.2.0 (2026-10-05)
+            - -FullLine anchors the WHOLE alternation: "^A|B$" anchored the IPv4 pattern at the
+              start only and the IPv6 one at the end only, so a line merely beginning with an IPv4
+              network (or ending with an IPv6 one) matched
     #>
     Param(
         [switch]$IPv4,
@@ -63,7 +68,7 @@ function Get-NetworkRegex {
     }
 
     if ($FullLine) {
-        return "^$sResult$"
+        return "^(?:$sResult)$"
     } else {
         return $sResult
     }

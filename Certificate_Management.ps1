@@ -3,7 +3,7 @@
     [string]$WorkingDir
 )
 
-$iModulesCount = 8
+$iModulesCount = 10
 $i = 0
 
 #region Include
@@ -28,13 +28,17 @@ Write-Progress -Activity "Loading script modules" -Status "PSSomeDataThings" -Pe
 Import-Module $PSScriptRoot\UDF\PSSomeDataThings -Force
 Write-Progress -Activity "Loading script modules" -Status "PSSomeFileThings" -PercentComplete (($($i++; $i) / $iModulesCount) * 100)
 Import-Module $PSScriptRoot\UDF\PSSomeFileThings -Force
+Write-Progress -Activity "Loading script modules" -Status "PSSomeMSSqlThings" -PercentComplete (($($i++; $i) / $iModulesCount) * 100)
+Import-Module $PSScriptRoot\UDF\PSSomeMSSqlThings -Force
 Write-Progress -Activity "Loading script modules" -Status "PSSomeNetworkThings" -PercentComplete (($($i++; $i) / $iModulesCount) * 100)
 Import-Module $PSScriptRoot\UDF\PSSomeNetworkThings -Force
+Write-Progress -Activity "Loading script modules" -Status "PSSomeRDSThings" -PercentComplete (($($i++; $i) / $iModulesCount) * 100)
+Import-Module $PSScriptRoot\UDF\PSSomeRDSThings -Force
 Write-Progress -Activity "Loading script modules" -Status "Loading end" -PercentComplete 100 -Completed
 #endregion Include
 
 #region script info
-#scriptVersion=2.5
+#scriptVersion=2.7
 #endregion script info
 
 #region Release notes
@@ -88,6 +92,53 @@ Changed:
   output would contain an unencrypted private key, a password is enforced and the
   result is stored in a password-protected ZIP (AES-256 for security, or ZipCrypto
   for Windows Explorer compatibility).
+
+2.6 (2026-10-25):
+- Added "Change the certificate of an RDS server": connects to the server, shows the
+  certificates currently in use, then deploys a PFX (from a working folder or any path).
+  The deployment mode is auto-detected: on a Connection Broker the roles to update are
+  chosen (RD Gateway, RD Web Access, RD Publishing, RD Redirector); on a standalone
+  Session Host the certificate is bound to the RDP-tcp listener.
+  The certificate to deploy can be:
+    - renewed with the same parameters: subject and SAN of the current certificate, CA and
+      template reused from the last request made for that CN (asked when none is found),
+      only the private key password is asked,
+    - a new certificate generated with the PKI (form pre-filled from the current certificate),
+    - an existing PFX (working folder or any path).
+  A PFX generated this way is deployed directly (no password prompt again).
+
+2.7 (2026-11-06):
+- Added "View a certificate": choose a working folder then one of its certificate files (a
+  folder holding a single file opens it directly), or "Other source" to enter a file path,
+  an HTTPS URL, a host[:port] (port 443 by default; HTTPS and SQL Server are tried at the same
+  time, the first answer wins) or a
+  SQL Server instance ("server\instance", port asked to the SQL Server Browser, or "server,port").
+  For a server, the certificate it presents to its clients is shown (no login needed).
+  Every list has Back and Exit. PEM (bundles included), DER, P7B and PFX/P12
+  (password asked when needed) are supported; when the source holds several certificates,
+  the one to view is chosen in a list ordered from the leaf to the root.
+  Displayed: subject, SAN, issuer, serial, validity (days left), SHA1/SHA256 fingerprints,
+  public key, signature algorithm, key usages, basic constraints, template, SKI/AKI,
+  CDP/AIA/OCSP URLs, private key presence, and the chain check on this computer.
+  The SAN are listed one per line, grouped by type. From the displayed certificate you can
+  create a new certificate or only a CSR (subject and SAN pre-filled), copy the DNS / IP SAN
+  to the clipboard (one per line, as the request form expects them), open it in the Windows
+  certificate viewer or decode it fully with OpenSSL.
+- "Import from existing certificate" now also accepts a PFX (password asked), a P7B or a
+  PEM bundle (the leaf certificate is used).
+- "Change the certificate of an RDS server" moved to a "Change the certificate of an application
+  server" sub-menu, which also holds:
+- Added "SQL Server": renews the TLS certificate of a SQL Server instance. The instances of the
+  server are detected (configured certificate, certificate presented on the network, restart
+  pending), the certificate comes from the same choices as for RDS (renewal, new request,
+  existing PFX), then it is prepared without interruption: import in LocalMachine\My, read access
+  to the private key for the service account, thumbprint in the instance configuration. The
+  instance is restarted now or later, as chosen (SQL Server reads its certificate at startup),
+  and the certificate presented after the restart is checked. Encryption settings
+  (ForceEncryption...) are never changed. Server side work in the new PSSomeMSSqlThings module.
+- Fixed: a host:port ("server.lan:443") was refused when importing or viewing a certificate,
+  and the certificate name was not extracted from a "<name>_<date>" working folder (the whole
+  folder name was used for the files) - both came from the DNS regex of PSSomeDataThings.
 
 #>
 #endregion Release notes
@@ -275,16 +326,21 @@ function Read-KeyPassword {
 function Read-FileNames {
     Param(
         [string]$DefaultFriendlyName,
-        [switch]$AllowBack
+        [switch]$AllowBack,
+        [string]$FriendlyName   # when set, no dialog: this name is used directly
     )
-    $oFriendlyName = Read-CLIDialogFilePath `
-        -Header "Please enter a friendly name. It will be used to generate certificate files and used in the pfx." `
-        -PropertyName "Friendly name" -AllowNonExisting -AllowBack:$AllowBack `
-        -DefaultValue $DefaultFriendlyName -ErrorMessage "Friendly name cannot be empty"
-    if ($null -ne $oFriendlyName -and $oFriendlyName.PSTypeNames -and $oFriendlyName.PSTypeNames[0] -eq "DialogResult.Action.Back") {
-        return $oFriendlyName
+    $sFriendlyName = if ($FriendlyName) {
+        $FriendlyName
+    } else {
+        $oFriendlyName = Read-CLIDialogFilePath `
+            -Header "Please enter a friendly name. It will be used to generate certificate files and used in the pfx." `
+            -PropertyName "Friendly name" -AllowNonExisting -AllowBack:$AllowBack `
+            -DefaultValue $DefaultFriendlyName -ErrorMessage "Friendly name cannot be empty"
+        if ($null -ne $oFriendlyName -and $oFriendlyName.PSTypeNames -and $oFriendlyName.PSTypeNames[0] -eq "DialogResult.Action.Back") {
+            return $oFriendlyName
+        }
+        $oFriendlyName
     }
-    $sFriendlyName = $oFriendlyName
     # The friendly name can legitimately contain characters that are illegal in Windows paths
     # (e.g. a wildcard "*.example.com"). Keep $sFriendlyName as-is for the PFX friendly name, but
     # derive a file-system-safe name for the working folder and the generated file names.
@@ -540,7 +596,7 @@ function Read-CertObjectAndSAN {
 
 function Import-CertToFormValues {
     $oDialogResult = Read-CLIDialogValidatedValue `
-        -Header "Enter a certificate file path, an HTTPS URL, or a host[:port] to import" `
+        -Header "Enter a certificate file path, an HTTPS URL, a host[:port] (HTTPS, else SQL Server) or a SQL Server instance (server\instance) to import" `
         -PropertyName "Path / URL / Host" `
         -ValidationMethod { param($v) return ($v.Trim().Length -gt 0) } `
         -ErrorMessage "Value cannot be empty" `
@@ -555,25 +611,10 @@ function Import-CertToFormValues {
     } else {
         [string]$oDialogResult
     }
-    $sInput = $sInput.Trim().Trim('"').Trim("'")
-
-    $sHttpsUrlRegex = '^https://.+'
-    $sHostPortRegex = Get-HostPortRegex -FullLine
-
     $oCert = $null
     try {
-        if ($sInput -match $sHttpsUrlRegex) {
-            Write-Host "Fetching certificate from $sInput ..." -ForegroundColor Cyan
-            $oCert = Get-CertificateFromUrl -Url $sInput
-        } elseif (Test-Path -LiteralPath $sInput -PathType Leaf) {
-            $oCert = Get-CertificateFromFile -Path $sInput
-        } elseif ($sInput -match $sHostPortRegex) {
-            $sUrl = "https://$sInput"
-            Write-Host "Fetching certificate from $sUrl ..." -ForegroundColor Cyan
-            $oCert = Get-CertificateFromUrl -Url $sUrl
-        } else {
-            $oCert = Get-CertificateFromFile -Path $sInput
-        }
+        # A file can hold several certificates (P7B, PEM bundle): keep the leaf
+        $oCert = Get-SortedCertificateChain -Certificates @(Get-CertificateFromInput -InputString $sInput) | Select-Object -First 1
     } catch {
         Write-Host "Failed to load certificate: $_" -ForegroundColor Red
         return $null
@@ -582,6 +623,16 @@ function Import-CertToFormValues {
 
     Write-Host "Imported certificate subject: $($oCert.Subject)" -ForegroundColor Green
 
+    return ConvertTo-CertFormValues -Certificate $oCert
+}
+
+function ConvertTo-CertFormValues {
+    # Builds the wizard initial values (certificate object + SAN) from an existing certificate
+    Param(
+        [Parameter(Mandatory)]
+        [System.Security.Cryptography.X509Certificates.X509Certificate2]$Certificate
+    )
+    $oCert = $Certificate
     $hDN = ConvertFrom-X500DistinguishedName -DistinguishedName $oCert.Subject
     $hCertObj = [ordered]@{
         CommonName         = if ($hDN.Contains("CN")) { $hDN.CN } else { "" }
@@ -722,9 +773,10 @@ function New-CSR_CLI {
     Param(
         [string]$OpenSSLPath,
         [switch]$ItemsMode,
-        [hashtable]$InitialValues
+        [hashtable]$InitialValues,
+        [hashtable]$PrebuiltCSR   # @{ CSR; MoreInfo } already built (same shape as Read-CSR): no wizard
     )
-    $oCSR = Read-CSR -ItemsMode:$ItemsMode -InitialValues $InitialValues
+    $oCSR = if ($PrebuiltCSR) { $PrebuiltCSR } else { Read-CSR -ItemsMode:$ItemsMode -InitialValues $InitialValues }
     if ($oCSR.PSObject.TypeNames[0] -eq "DialogResult.Action.Back") {
         return $oCSR
     }
@@ -875,7 +927,7 @@ function Get-CertificateNameFromFolder {
         [Parameter(Mandatory, Position = 0)]
         [string]$FolderName
     )
-    $sRegex = "^(?<dns>$(Get-DNSRegex))_[0-9]{4,4}(0[1-9]|1[0-2])(0[1-9]|1[0-9]|2[0-9]|30|31)-((0|1)[0-9]|2[0-3])[0-5][0-9][0-5][0-9]$"
+    $sRegex = "^(?<dns>$(Get-DNSRegex -NoBoundary))_[0-9]{4,4}(0[1-9]|1[0-2])(0[1-9]|1[0-9]|2[0-9]|30|31)-((0|1)[0-9]|2[0-3])[0-5][0-9][0-5][0-9]$"
     $ss = Select-String -InputObject $FolderName -Pattern $sRegex -AllMatches
     if ($ss) {
         return ($ss.Matches.Groups | Where-Object { $_.Name -eq "dns" }).Value
@@ -944,7 +996,8 @@ function New-PFX_CLI {
     Param(
         [string]$OpenSSLPath,
         [securestring]$PrivateKeyPassword,
-        [string]$CertFolder
+        [string]$CertFolder,
+        [switch]$ForWindowsStore
     )
     $sCertFolder = if ($CertFolder) {
         $CertFolder
@@ -1014,7 +1067,11 @@ function New-PFX_CLI {
     } else {
         Read-Host -AsSecureString -Prompt "Please enter private key password"
     }
-    $sWindowsPFX = Invoke-YesNoCLIDialog -YN -Message "Will this PFX be used in the Windows certificate store?"
+    $sWindowsPFX = if ($ForWindowsStore) {
+        "Yes"
+    } else {
+        Invoke-YesNoCLIDialog -YN -Message "Will this PFX be used in the Windows certificate store?"
+    }
 
     $hMergeOptions = @{
         PrivateKey       = $sKeyFile
@@ -1039,6 +1096,11 @@ function New-PFX_CLI {
         Write-Host "PFX generated successfully:" -ForegroundColor Green
         Write-Host $sOutPFXFile
         Write-Host ""
+        return [pscustomobject]@{
+            PfxPath  = $sOutPFXFile
+            Password = $ssKeyPassword
+            Folder   = $sCertFolder
+        }
     } else {
         Write-Host "PFX generation failed" -ForegroundColor Red
         Write-Host ""
@@ -1049,9 +1111,12 @@ function New-PKISignedCertAndPFX_CLI {
     Param(
         [string]$OpenSSLPath,
         [switch]$ItemsMode,
-        [hashtable]$InitialValues
+        [hashtable]$InitialValues,
+        [hashtable]$PrebuiltCSR,
+        [switch]$ForWindowsStore
     )
-    $oCSR = New-CSR_CLI -OpenSSLPath $OpenSSLPath -ItemsMode:$ItemsMode -InitialValues $InitialValues
+    # Returns the New-PFX_CLI result (PfxPath, Password, Folder) on success, nothing on failure
+    $oCSR = New-CSR_CLI -OpenSSLPath $OpenSSLPath -ItemsMode:$ItemsMode -InitialValues $InitialValues -PrebuiltCSR $PrebuiltCSR
     if ($oCSR.PSObject.TypeNames[0] -eq "DialogResult.Action.Back") {
         return $oCSR
     }
@@ -1069,8 +1134,9 @@ function New-PKISignedCertAndPFX_CLI {
             $Global:oRetrievedCertInfo = $oRetrievedCertInfo
             if ($oRetrievedCertInfo.Success) {
                 Write-Host "-------------------------- New-PFX_CLI --------------------------" -ForegroundColor Blue
-                New-PFX_CLI -OpenSSLPath $OpenSSLPath -PrivateKeyPassword $oCSR.CSR.KeyPassword -CertFolder $oCSR.Folder
+                $oPfx = New-PFX_CLI -OpenSSLPath $OpenSSLPath -PrivateKeyPassword $oCSR.CSR.KeyPassword -CertFolder $oCSR.Folder -ForWindowsStore:$ForWindowsStore
                 Write-Host "-----------------------------------------------------------------" -ForegroundColor Blue
+                return $oPfx
             } else {
                 Write-Host "Failed to get issued certificate" -ForegroundColor Red
                 Write-Host "Reason:"
@@ -1481,6 +1547,1240 @@ function Invoke-SignCSR_CLI {
     Write-Host ""
 }
 
+function Read-CertificateSourceChoice {
+    # Returns "Renew", "New", "Existing", or $null when the user goes back
+    Param(
+        [System.Security.Cryptography.X509Certificates.X509Certificate2]$CurrentCertificate
+    )
+    $sHeader = "Which certificate do you want to deploy?"
+    if ($CurrentCertificate) {
+        $sState = if ($CurrentCertificate.NotAfter -lt (Get-Date)) { "expired on" } else { "expires on" }
+        $sHeader = "Current certificate $sState $($CurrentCertificate.NotAfter). $sHeader"
+    }
+    $aChoices = @()
+    if ($CurrentCertificate) {
+        $aChoices += [pscustomobject]@{ Id = "Renew"; Text = "Renew with the same parameters (subject and SAN of the current certificate)" }
+        $aChoices += [pscustomobject]@{ Id = "New"; Text = "Generate a new certificate (form pre-filled from the current one)" }
+    } else {
+        $aChoices += [pscustomobject]@{ Id = "New"; Text = "Generate a new certificate with the PKI" }
+    }
+    $aChoices += [pscustomobject]@{ Id = "Existing"; Text = "Use an existing PFX" }
+
+    $oResult = Select-CLIDialogObjectInArray -Objects $aChoices `
+        -SelectedColumns @{ l = "Option"; e = { $_.Text } } `
+        -SelectHeaderMessage $sHeader `
+        -OtherMenuItems @(New-CLIDialogButton -Text "&Back" -Back) `
+        -FooterMessage "" -SeparatorColor ([System.ConsoleColor]::Blue) `
+        -HeaderTextInSeparator -Space -DontShowPageNumberWhenOnlyOnePage
+    if (-not $oResult -or ($oResult.PSTypeNames -and $oResult.PSTypeNames[0] -like "DialogResult.Action.*")) { return $null }
+    return $oResult.Value.Id
+}
+
+function New-RenewalCSR {
+    # Builds a CSR (same shape as Read-CSR output) that reuses the subject and SAN of a certificate.
+    # CA and template come from the most recent working folder generated for the same CN; when none
+    # is found they are asked. Only the private key password is always asked.
+    # Returns @{ CSR; MoreInfo }, a DialogResult.Action.Back, or $null on error.
+    Param(
+        [Parameter(Mandatory)]
+        [hashtable]$FormValues
+    )
+    $hCertObj = $FormValues.CertAndSAN.CertificateObject
+    $hSAN = $FormValues.CertAndSAN.SAN
+    $sCN = $hCertObj.CommonName
+    if (-not $sCN) {
+        Write-Host "The current certificate has no Common Name: use 'Generate a new certificate' instead." -ForegroundColor Yellow
+        return New-DialogResultAction -Action "Back"
+    }
+
+    # 1. CA and template: reuse the previous request made for this CN, if any
+    $sCAName = $null; $sTemplate = $null; $sPKIServer = $null; $sPrevFolder = $null
+    $sCNRegex = "(^|,\s*)CN=" + [regex]::Escape($sCN) + "(,|$)"
+    foreach ($oDir in (Get-ChildItem -Path (Get-ScriptDir -WorkingDir) -Directory | Sort-Object LastWriteTime -Descending)) {
+        $oInfo = Get-CertInfo -CertFolder $oDir.FullName
+        if (-not ($oInfo -and $oInfo.CSR -and $oInfo.MoreInfo -and $oInfo.MoreInfo.CAName)) { continue }
+        if (($oInfo.CSR.CommonName -eq $sCN) -or ($oInfo.CSR.Subject -match $sCNRegex)) {
+            $sCAName = $oInfo.MoreInfo.CAName
+            $sTemplate = $oInfo.CSR.CertificateTemplate
+            $sPKIServer = $oInfo.MoreInfo.PKIServer
+            $sPrevFolder = $oDir.Name
+            break
+        }
+    }
+    if (-not $sCAName) {
+        Write-Host "No previous request found for $sCN in the working folders: please choose the CA and the template." -ForegroundColor Yellow
+        $oCA = if ($ScriptConfig.CAFilter) { Read-CA $ScriptConfig.CAFilter } else { Read-CA }
+        if ($null -ne $oCA -and $oCA.PSObject.TypeNames[0] -eq "DialogResult.Action.Back") { return $oCA }
+        if (-not (($null -ne $oCA) -and ($oCA.PSObject.TypeNames[0] -eq "ADcertificationAuthority"))) {
+            Write-Host "No certificate authority selected." -ForegroundColor Yellow
+            return New-DialogResultAction -Action "Back"
+        }
+        $sCAName = $oCA.Name
+        $oTemplate = if ($ScriptConfig.TemplateFilter) {
+            Read-TemplateName -CA $sCAName -TemplateFilter $ScriptConfig.TemplateFilter
+        } else {
+            Read-TemplateName -CA $sCAName
+        }
+        if ($null -ne $oTemplate -and $oTemplate.PSObject.TypeNames[0] -eq "DialogResult.Action.Back") { return $oTemplate }
+        if (($oTemplate -is [hashtable]) -and $oTemplate.CertificateTemplate) { $sTemplate = $oTemplate.CertificateTemplate }
+    }
+    if (-not $sPKIServer) {
+        $sPKIServer = (Get-CAEnrollmentServices -NameFilter ("^" + $sCAName + "$")).DNSHostName
+    }
+    if (-not $sPKIServer) {
+        Write-Host "Could not resolve the PKI server for CA '$sCAName'." -ForegroundColor Red
+        return $null
+    }
+
+    # 2. Summary and confirmation
+    Write-Host ""
+    Write-Host "------------------------ Certificate renewal ------------------------" -ForegroundColor Blue
+    foreach ($k in $hCertObj.Keys) {
+        if ($hCertObj[$k]) { Write-Host ("{0,-20}: {1}" -f $k, $hCertObj[$k]) }
+    }
+    Write-Host ("{0,-20}: {1}" -f "SAN (DNS)", (@($hSAN.SANdns) -join ", "))
+    if ($hSAN.SANipaddress) { Write-Host ("{0,-20}: {1}" -f "SAN (IP)", (@($hSAN.SANipaddress) -join ", ")) }
+    Write-Host ("{0,-20}: {1}" -f "CA", $sCAName)
+    Write-Host ("{0,-20}: {1}" -f "Template", $(if ($sTemplate) { $sTemplate } else { "(none)" }))
+    if ($sPrevFolder) { Write-Host ("{0,-20}: {1}" -f "CA/template from", $sPrevFolder) -ForegroundColor DarkGray }
+    Write-Host "---------------------------------------------------------------------" -ForegroundColor Blue
+    $sConfirm = Invoke-YesNoCLIDialog -YN -Vertical -Message "Generate the new certificate with these parameters?" `
+        -YesButtonText "&Yes, generate it" -NoButtonText "&No, go back"
+    if ($sConfirm -ne "Yes") { return New-DialogResultAction -Action "Back" }
+
+    # 3. Private key password, then the working folder (named after the CN, no dialog)
+    $hKey = Read-KeyPassword -AllowBack
+    if ($hKey.PSTypeNames -and $hKey.PSTypeNames[0] -like "DialogResult.Action.*") { return $hKey }
+    $hFiles = Read-FileNames -FriendlyName $sCN
+
+    $hCSR = @{}
+    foreach ($k in $hCertObj.Keys) { $hCSR[$k] = $hCertObj[$k] }
+    foreach ($k in $hSAN.Keys) { $hCSR[$k] = $hSAN[$k] }
+    if ($sTemplate) { $hCSR.CertificateTemplate = $sTemplate }
+    foreach ($k in $hKey.Keys) { $hCSR[$k] = $hKey[$k] }
+    foreach ($k in $hFiles.Keys) { $hCSR[$k] = $hFiles[$k] }
+    return @{
+        CSR      = $hCSR
+        MoreInfo = @{ PKIServer = $sPKIServer; CAName = $sCAName }
+    }
+}
+
+function Write-RDSCertificateInfo {
+    Param(
+        [Parameter(Mandatory)]
+        [object]$RDSCertInfo,
+        [string]$Title = "Current RDS certificates"
+    )
+    Write-Host ""
+    Write-Host ("---- {0} on {1} ({2} mode) ----" -f $Title, $RDSCertInfo.ComputerName, $RDSCertInfo.DeploymentMode) -ForegroundColor Blue
+    $RDSCertInfo.Certificates |
+        Select-Object Role, Level, Subject, @{ l = "Expires"; e = { $_.NotAfter } }, Thumbprint |
+        Format-Table -AutoSize | Out-String | Write-Host
+}
+
+function Read-RDSRoles {
+    # Broker mode only: let the user pick which RDS roles receive the new certificate.
+    Param(
+        [object[]]$CurrentCertificates
+    )
+    $aRoles = [ordered]@{
+        RDGateway    = "RD &Gateway"
+        RDWebAccess  = "RD &Web Access"
+        RDPublishing = "RD &Publishing"
+        RDRedirector = "RD &Redirector (Connection Broker SSO)"
+    }
+    $cSep = [System.ConsoleColor]::Blue
+    $cHint = Get-CLIDialogTheme "HintColor"
+    while ($true) {
+        $aLines = @()
+        $aLines += New-CLIDialogSeparator -AutoLength -Text "Roles to update" -ForegroundColor $cSep
+        foreach ($sRole in $aRoles.Keys) {
+            $oCurrent = $CurrentCertificates | Where-Object { $_.Role -eq $sRole } | Select-Object -First 1
+            # Gateway / Web Access can only be set when a server of the deployment holds the role
+            if ($oCurrent -and ($oCurrent.Available -eq $false)) { continue }
+            $sSuffix = if ($oCurrent -and $oCurrent.NotAfter) { "   (current cert expires $($oCurrent.NotAfter))" } else { "   (not configured)" }
+            $aLines += New-CLIDialogCheckBox -Name $sRole -Text ($aRoles[$sRole] + $sSuffix) -Enabled $true -AddNewLine
+        }
+        $aLines += New-CLIDialogText -Text "The same certificate is usually applied to all roles." -ForegroundColor $cHint -AddNewLine
+        $aLines += New-CLIDialogSeparator -AutoLength -ForegroundColor $cSep
+        $aLines += New-CLIDialogObjectsRow -Header " " -Prefix "  " -FocusedPrefix "> " -HeaderSeparator "  " -Row @(
+            New-CLIDialogButton -Text "&Ok" -Validate
+            New-CLIDialogButton -Text "&Back" -Back
+        )
+        $oDialogResult = Invoke-CLIDialog -InputObject $aLines -Validate -ErrorDetails
+        if ($oDialogResult.Action -eq "Back") { return New-DialogResultAction -Action "Back" }
+        if ($oDialogResult.Action -ne "Validate") { return $null }
+        $hForm = $oDialogResult.DialogResult.Form.GetValue($true)
+        $aSelected = @($aRoles.Keys | Where-Object { $hForm.Contains($_) -and [bool]$hForm[$_] })
+        if ($aSelected.Count -gt 0) { return $aSelected }
+        Write-Host "Please select at least one role." -ForegroundColor Yellow
+    }
+}
+
+function Get-DeploymentPfx_CLI {
+    # Shared by the "Change the certificate of an application server" menus (RDS, SQL Server):
+    # asks where the certificate comes from (renewal, new PKI request or existing PFX), produces
+    # or selects the PFX, opens it with its password and checks it holds a private key.
+    # Returns @{ PfxPath; Password; Certificate }, or nothing when the user goes back or on failure.
+    Param(
+        [Parameter(Mandatory)]
+        [string]$ServerName,
+        [System.Security.Cryptography.X509Certificates.X509Certificate2]$CurrentCertificate,
+        [string]$OpenSSLPath
+    )
+    $sPfxPath = $null
+    $ssPfxPwd = $null
+    while (-not $sPfxPath) {
+        $sChoice = Read-CertificateSourceChoice -CurrentCertificate $CurrentCertificate
+        if (-not $sChoice) { return }
+        # (if/elseif rather than switch: "continue" inside a switch would not loop the while)
+        if ($sChoice -eq "Existing") {
+            $oSel = Select-CLIFileFromFolder -Path (Get-ScriptDir -WorkingDir) -Filter "*.pfx" -Recurse -ColumnName "Folder" -AllowOtherFile -AllowBack `
+                -SelectHeaderMessage "Select the PFX to deploy on $ServerName (or choose another file)" `
+                -OtherFilePromptText "Enter the path to the PFX file to deploy" `
+                -EmptyArrayMessage "No PFX found in the working folders - use 'Select Another File'" `
+                -SeparatorColor Blue
+            if (-not $oSel -or ($oSel.PSTypeNames -and $oSel.PSTypeNames[0] -eq "DialogResult.Action.Back")) { continue }
+            if ($oSel.Value) { $sPfxPath = $oSel.Value.FullName }
+            continue
+        } elseif ($sChoice -eq "Renew") {
+            $hPrebuilt = New-RenewalCSR -FormValues (ConvertTo-CertFormValues -Certificate $CurrentCertificate)
+            if ($null -eq $hPrebuilt) { return }
+            if ($hPrebuilt.PSTypeNames -and $hPrebuilt.PSTypeNames[0] -like "DialogResult.Action.*") { continue }
+            $oPfx = New-PKISignedCertAndPFX_CLI -OpenSSLPath $OpenSSLPath -ItemsMode -PrebuiltCSR $hPrebuilt -ForWindowsStore
+        } else {
+            $hInit = if ($CurrentCertificate) {
+                ConvertTo-CertFormValues -Certificate $CurrentCertificate
+            } else {
+                @{ CertAndSAN = @{
+                    CertificateObject = [ordered]@{ CommonName = $ServerName; Organisation = ""; OrganisationalUnit = ""; Locality = ""; State = ""; CountryCode = "" }
+                    SAN = @{ SANdns = @($ServerName) }
+                } }
+            }
+            $oPfx = New-PKISignedCertAndPFX_CLI -OpenSSLPath $OpenSSLPath -ItemsMode -InitialValues $hInit -ForWindowsStore
+        }
+        # Renew / New: Back in the wizard returns to the choice, a failure stops here
+        if ($oPfx -and $oPfx.PSTypeNames -and $oPfx.PSTypeNames[0] -like "DialogResult.Action.*") { continue }
+        if (-not ($oPfx -and $oPfx.PfxPath)) {
+            Write-Host "The certificate was not generated, nothing has been deployed." -ForegroundColor Red
+            Write-Host ""
+            return
+        }
+        $sPfxPath = $oPfx.PfxPath
+        $ssPfxPwd = $oPfx.Password
+    }
+
+    # PFX password, validated by actually opening the PFX (skipped when we just generated it)
+    $oNewCert = $null
+    if ($ssPfxPwd) {
+        $pBSTR = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($ssPfxPwd)
+        try {
+            $oNewCert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2(
+                $sPfxPath, [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($pBSTR))
+        } catch {
+            $oNewCert = $null
+        } finally {
+            [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($pBSTR)
+        }
+    }
+    while (-not $oNewCert) {
+        $ssPfxPwd = Read-Host -AsSecureString -Prompt "PFX password (leave empty if none)"
+        $pBSTR = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($ssPfxPwd)
+        try {
+            $sPlain = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($pBSTR)
+            $oNewCert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($sPfxPath, $sPlain)
+            break
+        } catch {
+            Write-Host "Cannot open the PFX with this password. Please try again." -ForegroundColor Red
+        } finally {
+            [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($pBSTR)
+        }
+    }
+    if (-not $oNewCert.HasPrivateKey) {
+        Write-Host "This PFX does not contain a private key: it cannot be deployed on a server." -ForegroundColor Red
+        Write-Host ""
+        return
+    }
+    return [pscustomobject]@{
+        PfxPath     = $sPfxPath
+        Password    = $ssPfxPwd
+        Certificate = $oNewCert
+    }
+}
+
+function Write-DeploymentCertificateCheck {
+    # Shows the certificate about to be deployed and warns when it does not look right for the
+    # server: expired, chain not valid on this computer, server name missing from the SAN, and
+    # (CheckServerAuthentication) usages that do not allow TLS server authentication.
+    Param(
+        [Parameter(Mandatory)]
+        [System.Security.Cryptography.X509Certificates.X509Certificate2]$Certificate,
+        [Parameter(Mandatory)]
+        [string]$ServerName,
+        [string]$ChainHint,             # product-specific advice shown when the chain does not validate
+        [switch]$CheckServerAuthentication
+    )
+    $oNewCert = $Certificate
+    $aDNS = @(Get-CertificateSAN -Certificate $oNewCert -AsList | Where-Object { $_.Type -eq "DNS_NAME" } | ForEach-Object { $_.Value })
+    Write-Host ""
+    Write-Host "------------------------ Certificate to deploy ------------------------" -ForegroundColor Blue
+    Write-Host ("Subject`t`t: {0}" -f $oNewCert.Subject)
+    Write-Host ("SAN (DNS)`t: {0}" -f ($aDNS -join ", "))
+    Write-Host ("Issuer`t`t: {0}" -f $oNewCert.Issuer)
+    Write-Host ("Valid`t`t: {0} -> {1}" -f $oNewCert.NotBefore, $oNewCert.NotAfter)
+    Write-Host ("Thumbprint`t: {0}" -f $oNewCert.Thumbprint)
+    Write-Host "-----------------------------------------------------------------------" -ForegroundColor Blue
+    if ($oNewCert.NotAfter -lt (Get-Date)) {
+        Write-Host "Warning: this certificate is expired." -ForegroundColor Yellow
+    }
+    try {
+        $oChain = New-Object System.Security.Cryptography.X509Certificates.X509Chain
+        $oChain.ChainPolicy.RevocationMode = [System.Security.Cryptography.X509Certificates.X509RevocationMode]::Online
+        $oChain.ChainPolicy.RevocationFlag = [System.Security.Cryptography.X509Certificates.X509RevocationFlag]::ExcludeRoot
+        if (-not $oChain.Build($oNewCert)) {
+            Write-Host "Warning: the certificate chain does not validate on this computer:" -ForegroundColor Yellow
+            foreach ($oElement in $oChain.ChainElements) {
+                foreach ($oStatus in $oElement.ChainElementStatus) {
+                    Write-Host ("  {0} : {1}" -f $oElement.Certificate.Subject, $oStatus.StatusInformation.Trim()) -ForegroundColor Yellow
+                }
+            }
+            if ($ChainHint) { Write-Host "  $ChainHint" -ForegroundColor Yellow }
+        }
+    } catch {
+        Write-Verbose "Chain check failed: $_"
+    }
+    # Matches the entered name as-is (wildcards in SAN are honoured by -like), or a short
+    # name entered for a server whose FQDN is in the SAN (e.g. "rds01" vs "rds01.contoso.com").
+    $bNameMatch = $false
+    foreach ($sName in $aDNS) {
+        if (($ServerName -like $sName) -or ($sName -like "$ServerName.*")) {
+            $bNameMatch = $true
+            break
+        }
+    }
+    if (-not $bNameMatch) {
+        Write-Host "Warning: '$ServerName' is not listed in the certificate SAN. Clients may show a name mismatch warning." -ForegroundColor Yellow
+    }
+    if ($CheckServerAuthentication) {
+        foreach ($oExt in $oNewCert.Extensions) {
+            if (($oExt -is [System.Security.Cryptography.X509Certificates.X509EnhancedKeyUsageExtension]) -and
+                (@($oExt.EnhancedKeyUsages | ForEach-Object { $_.Value }) -notcontains "1.3.6.1.5.5.7.3.1")) {
+                Write-Host "Warning: the certificate does not have the 'Server Authentication' usage (1.3.6.1.5.5.7.3.1)." -ForegroundColor Yellow
+            }
+            if (($oExt -is [System.Security.Cryptography.X509Certificates.X509KeyUsageExtension]) -and
+                ($oNewCert.PublicKey.Oid.Value -eq "1.2.840.113549.1.1.1") -and
+                -not ($oExt.KeyUsages -band [System.Security.Cryptography.X509Certificates.X509KeyUsageFlags]::KeyEncipherment)) {
+                Write-Host "Warning: the RSA key usage does not include 'Key Encipherment'." -ForegroundColor Yellow
+            }
+        }
+    }
+    Write-Host ""
+}
+
+function Set-RDSCertificate_CLI {
+    # Change the certificate used by a Remote Desktop Services server:
+    #   - Connection Broker deployment: Set-RDCertificate on the chosen roles
+    #   - Standalone Session Host: import into LocalMachine\My and bind to the RDP-tcp listener
+    # The actual work is done by the PSSomeRDSThings module (Get-/Set-RDSCertificate).
+
+    # 1. Target server
+    $sServerRegex = "(" + (Get-DNSRegex -FullLine) + ")|(" + (Get-IPRegex -FullLine) + ")"
+    $hServerParams = @{
+        Header           = "RDS server to update (in a Connection Broker deployment, enter the broker)"
+        PropertyName     = "Server"
+        ValidationMethod = $sServerRegex
+        ErrorMessage     = "Please enter a valid server name or IP address"
+        AllowCancel      = $true
+    }
+    if ($Global:RDSServer) { $hServerParams.DefaultValue = $Global:RDSServer }
+    $oServer = Read-CLIDialogValidatedValue @hServerParams
+    if ($null -eq $oServer -or ($oServer.PSTypeNames -and $oServer.PSTypeNames[0] -like "DialogResult.Action.*")) { return }
+    $sServer = ([string]$oServer.Value).Trim()
+    $Global:RDSServer = $sServer
+
+    # 2. Connect (reuse the PKI credential as a starting point, admins often use the same account)
+    if ($Global:RDSSession -and ($Global:RDSSession.ComputerName -ne $sServer)) {
+        Remove-PSSession -Session $Global:RDSSession -ErrorAction SilentlyContinue
+        $Global:RDSSession = $null
+    }
+    $oCredential = if ($Global:RDSCredential) { $Global:RDSCredential } else { $Global:PKICredential }
+    $oConnect = Connect-CLIDialogPSSession -ComputerName $sServer -Credential $oCredential -Session $Global:RDSSession `
+        -Message "Please provide administrator credentials to connect to" -AllowCancel
+    if ($null -eq $oConnect -or ($oConnect.PSTypeNames -and $oConnect.PSTypeNames[0] -like "DialogResult.Action.*")) { return }
+    $Global:RDSCredential = $oConnect.Credential
+    $Global:RDSSession = $oConnect.Session
+
+    # 3. Detect deployment mode and show the certificates currently in use
+    Write-Host "Reading RDS configuration on $sServer ..." -ForegroundColor Cyan
+    try {
+        $sMode = Get-RDSDeploymentMode -Session $Global:RDSSession -ErrorAction Stop
+        $oBefore = Get-RDSCertificate -Session $Global:RDSSession -DeploymentMode $sMode -Credential $Global:RDSCredential -ErrorAction Stop
+    } catch {
+        Write-Host "Unable to read the RDS configuration: $_" -ForegroundColor Red
+        if ($_.InvocationInfo.PositionMessage) { Write-Host $_.InvocationInfo.PositionMessage -ForegroundColor DarkGray }
+        if ($_.ScriptStackTrace) { Write-Host $_.ScriptStackTrace -ForegroundColor DarkGray }
+        Write-Host ""
+        return
+    }
+    Write-RDSCertificateInfo -RDSCertInfo $oBefore
+    if ($sMode -eq "Standalone") {
+        Write-Host "No Connection Broker detected: the certificate will be bound to the RDP-tcp listener." -ForegroundColor Yellow
+        Write-Host "If this server belongs to a broker deployment, run this menu against the broker instead." -ForegroundColor Yellow
+        Write-Host ""
+    }
+
+    # 4. Certificate to deploy: renewal, new request or existing PFX (shared with the other servers)
+    $oCurrentX509 = $null
+    $oCurrentInfo = $oBefore.Certificates | Where-Object { $_.RawData } | Select-Object -First 1
+    if ($oCurrentInfo) {
+        try {
+            $oCurrentX509 = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2(,[byte[]]@($oCurrentInfo.RawData))
+        } catch {
+            Write-Verbose "Could not parse the current certificate: $_"
+        }
+    }
+    $oPfx = Get-DeploymentPfx_CLI -ServerName $sServer -CurrentCertificate $oCurrentX509 -OpenSSLPath $OpenSSLPath
+    if (-not $oPfx) { return }
+    $sPfxPath = $oPfx.PfxPath
+    $ssPfxPwd = $oPfx.Password
+    $oNewCert = $oPfx.Certificate
+
+    # 5. Show the new certificate and warn when it does not look right for this server.
+    # RDP clients check the whole chain, revocation included, to accept signed RDP files (RD
+    # Publishing): an expired or unreachable CRL makes RemoteApps fail to start.
+    Write-DeploymentCertificateCheck -Certificate $oNewCert -ServerName $sServer `
+        -ChainHint "RDP clients may refuse signed RemoteApp files (check that the CRLs of the chain are published and not expired)."
+
+    # 6. Broker mode: choose the roles
+    $hSetParams = @{
+        Session        = $Global:RDSSession
+        PfxPath        = $sPfxPath
+        Password       = $ssPfxPwd
+        DeploymentMode = $sMode
+        Credential     = $Global:RDSCredential
+    }
+    $sTarget = "the RDP-tcp listener"
+    if ($sMode -eq "Broker") {
+        $aRoles = Read-RDSRoles -CurrentCertificates $oBefore.Certificates
+        if ($null -eq $aRoles -or ($aRoles.PSTypeNames -and $aRoles.PSTypeNames[0] -like "DialogResult.Action.*")) { return }
+        $hSetParams.Roles = $aRoles
+        $sTarget = "these roles: " + ($aRoles -join ", ")
+    }
+
+    # 7. Confirm and deploy
+    $sConfirm = Invoke-YesNoCLIDialog -YN -Vertical -Message "Deploy this certificate on $sServer for $sTarget ?" `
+        -YesButtonText "&Yes, deploy it" -NoButtonText "&No, cancel"
+    if ($sConfirm -ne "Yes") { return }
+
+    Write-Host "Deploying certificate on $sServer ..." -ForegroundColor Cyan
+    $oResult = try {
+        Set-RDSCertificate @hSetParams -ErrorAction Stop
+    } catch {
+        Write-Host "Deployment failed: $_" -ForegroundColor Red
+        if ($_.ScriptStackTrace) { Write-Host $_.ScriptStackTrace -ForegroundColor DarkGray }
+        Write-Host ""
+        return
+    }
+    foreach ($oRole in $oResult.RoleResults) {
+        if ($oRole.Success) {
+            Write-Host ("  [OK]     {0}" -f $oRole.Role) -ForegroundColor Green
+            if ($oRole.Warning) { Write-Host ("           {0}" -f $oRole.Warning) -ForegroundColor Yellow }
+        } else {
+            Write-Host ("  [FAILED] {0} : {1}" -f $oRole.Role, $oRole.Error) -ForegroundColor Red
+        }
+    }
+    if ($oResult.Success) {
+        Write-Host "Certificate deployed successfully." -ForegroundColor Green
+    } else {
+        Write-Host "Some roles could not be updated." -ForegroundColor Red
+    }
+
+    # 8. Show the resulting configuration
+    try {
+        $oAfter = Get-RDSCertificate -Session $Global:RDSSession -DeploymentMode $sMode -Credential $Global:RDSCredential -ErrorAction Stop
+        Write-RDSCertificateInfo -RDSCertInfo $oAfter -Title "RDS certificates after update"
+    } catch {
+        Write-Host "Unable to read back the RDS configuration: $_" -ForegroundColor Yellow
+        Write-Host ""
+    }
+}
+
+function Set-MSSqlCertificate_CLI {
+    # Change (renew) the TLS certificate of a SQL Server instance. Only the certificate changes:
+    # the encryption settings (ForceEncryption...) are left as they are.
+    # SQL Server reads its certificate when the service starts: the certificate is prepared without
+    # interruption, then the instance is restarted now or later, as the user chooses.
+    # The work on the server is done by the PSSomeMSSqlThings module.
+    # Returns a DialogResult.Action.Exit when the user chose Exit, nothing otherwise.
+    $cSep = [System.ConsoleColor]::Blue
+    $sFallbackSubject = "CN=SSL_Self_Signed_Fallback"
+
+    # 1. Target server
+    $sServerRegex = "(" + (Get-DNSRegex -FullLine) + ")|(" + (Get-IPRegex -FullLine) + ")"
+    $hServerParams = @{
+        Header           = "SQL Server computer to update"
+        PropertyName     = "Server"
+        ValidationMethod = $sServerRegex
+        ErrorMessage     = "Please enter a valid server name or IP address"
+        AllowCancel      = $true
+    }
+    if ($Global:MSSqlServer) { $hServerParams.DefaultValue = $Global:MSSqlServer }
+    $oServer = Read-CLIDialogValidatedValue @hServerParams
+    if (Test-DialogAction $oServer) { return }
+    $sServer = ([string]$oServer.Value).Trim()
+    $Global:MSSqlServer = $sServer
+
+    # 2. Connect (reuse the RDS / PKI credential as a starting point, admins often use the same account)
+    if ($Global:MSSqlSession -and ($Global:MSSqlSession.ComputerName -ne $sServer)) {
+        Remove-PSSession -Session $Global:MSSqlSession -ErrorAction SilentlyContinue
+        $Global:MSSqlSession = $null
+    }
+    $oCredential = if ($Global:MSSqlCredential) { $Global:MSSqlCredential } elseif ($Global:RDSCredential) { $Global:RDSCredential } else { $Global:PKICredential }
+    $oConnect = Connect-CLIDialogPSSession -ComputerName $sServer -Credential $oCredential -Session $Global:MSSqlSession `
+        -Message "Please provide administrator credentials to connect to" -AllowCancel
+    if (Test-DialogAction $oConnect) { return }
+    $Global:MSSqlCredential = $oConnect.Credential
+    $Global:MSSqlSession = $oConnect.Session
+
+    while ($true) {
+        # 3. Instances, with the certificate configured and the one presented on the network
+        Write-Host "Reading SQL Server instances on $sServer ..." -ForegroundColor Cyan
+        $aInstances = try {
+            @(Get-MSSqlInstance -Session $Global:MSSqlSession -ErrorAction Stop)
+        } catch {
+            Write-Host "Unable to read the SQL Server instances: $_" -ForegroundColor Red
+            Write-Host ""
+            return
+        }
+        if ($aInstances.Count -eq 0) {
+            Write-Host "No SQL Server instance found on $sServer." -ForegroundColor Yellow
+            Write-Host ""
+            return
+        }
+        $aRows = foreach ($oInstance in $aInstances) {
+            $oConfigured = if ($oInstance.CertificateRawData) {
+                New-Object System.Security.Cryptography.X509Certificates.X509Certificate2(,[byte[]]@($oInstance.CertificateRawData))
+            }
+            $oPresented = $null
+            if (($oInstance.ServiceState -eq "Running") -and $oInstance.TcpEnabled -and $oInstance.TcpPort) {
+                $oPresented = try { Get-CertificateFromSqlServer -ComputerName $sServer -Port $oInstance.TcpPort -TimeoutSeconds 5 } catch { $null }
+            }
+            $sConfigured = if (-not $oInstance.CertificateThumbprint) {
+                "(none)"
+            } elseif (-not $oConfigured) {
+                "MISSING from the store!"
+            } else {
+                "{0} (expires {1:yyyy-MM-dd})" -f $oConfigured.GetNameInfo("SimpleName", $false), $oConfigured.NotAfter
+            }
+            $sInUse = if (-not $oPresented) {
+                "unknown"
+            } elseif ($oPresented.Subject -eq $sFallbackSubject) {
+                if ($oInstance.CertificateThumbprint) { "self-signed (restart pending)" } else { "self-signed" }
+            } elseif ($oPresented.Thumbprint -eq $oInstance.CertificateThumbprint) {
+                "configured one"
+            } else {
+                "{0} (restart pending)" -f $oPresented.GetNameInfo("SimpleName", $false)
+            }
+            [pscustomobject]@{
+                Instance   = $oInstance.InstanceName
+                State      = $oInstance.ServiceState
+                Port       = if ($oInstance.TcpPort) { $oInstance.TcpPort } else { "" }
+                Configured = $sConfigured
+                InUse      = $sInUse
+                Info       = $oInstance
+                ConfiguredCertificate = $oConfigured
+                PresentedCertificate  = $oPresented
+            }
+        }
+
+        # 4. Instance to update
+        $oSel = Select-CLIDialogObjectInArray -Objects @($aRows) `
+            -SelectedColumns @(
+                @{ l = "Instance"; e = { $_.Instance } }, @{ l = "State"; e = { $_.State } }, @{ l = "Port"; e = { $_.Port } },
+                @{ l = "Configured certificate"; e = { $_.Configured } }, @{ l = "Presented on the network"; e = { $_.InUse } }
+            ) `
+            -SelectHeaderMessage "Which instance of $sServer do you want to update?" `
+            -OtherMenuItems @(
+                New-CLIDialogButton -Text "&Back" -Back
+                New-CLIDialogButton -Text "&Exit" -Exit
+            ) `
+            -FooterMessage "" -SeparatorColor $cSep -HeaderTextInSeparator -Space -DontShowPageNumberWhenOnlyOnePage
+        if (Test-DialogAction $oSel -Action "Exit") { return $oSel }
+        if (Test-DialogAction $oSel) { return }
+        $oRow = $oSel.Value
+        $oInstance = $oRow.Info
+
+        Write-Host ""
+        Write-Host ("---- Instance {0} on {1} ----" -f $oInstance.InstanceName, $sServer) -ForegroundColor Blue
+        Write-Host ("Version`t`t: {0} ({1})" -f $oInstance.Version, $oInstance.Edition)
+        Write-Host ("Service`t`t: {0} ({1}), account {2}" -f $oInstance.ServiceName, $oInstance.ServiceState, $oInstance.ServiceAccount)
+        Write-Host ("Encryption`t: {0} (not changed by this tool)" -f $(if ($oInstance.ForceEncryption) { "forced" } else { "not forced" }))
+        Write-Host ("Configured`t: {0}" -f $oRow.Configured)
+        Write-Host ("Presented`t: {0}" -f $oRow.InUse)
+        Write-Host ""
+        if ($oInstance.CertificateThumbprint -and -not $oRow.ConfiguredCertificate) {
+            Write-Host "Warning: the configured certificate ($($oInstance.CertificateThumbprint)) is not in the store: the instance will not start at its next restart." -ForegroundColor Yellow
+            Write-Host ""
+        }
+
+        # 5. Certificate to deploy: renewal, new request or existing PFX. The current certificate is
+        #    the configured one, else the one presented (unless self-generated by SQL Server)
+        $oCurrent = if ($oRow.ConfiguredCertificate) {
+            $oRow.ConfiguredCertificate
+        } elseif ($oRow.PresentedCertificate -and ($oRow.PresentedCertificate.Subject -ne $sFallbackSubject)) {
+            $oRow.PresentedCertificate
+        }
+        $oPfx = Get-DeploymentPfx_CLI -ServerName $sServer -CurrentCertificate $oCurrent -OpenSSLPath $OpenSSLPath
+        if (-not $oPfx) { continue }
+
+        # 6. Checks
+        Write-DeploymentCertificateCheck -Certificate $oPfx.Certificate -ServerName $sServer -CheckServerAuthentication `
+            -ChainHint "Clients that validate the server certificate (TrustServerCertificate=False) will refuse the connection."
+
+        # 7. Prepare the certificate (no interruption)
+        $sConfirm = Invoke-YesNoCLIDialog -YN -Vertical `
+            -Message "Prepare this certificate for instance $($oInstance.InstanceName) on $sServer ? The instance is not restarted at this step." `
+            -YesButtonText "&Yes, prepare it" -NoButtonText "&No, cancel"
+        if ($sConfirm -ne "Yes") { continue }
+        Write-Host "Preparing the certificate on $sServer ..." -ForegroundColor Cyan
+        $oResult = try {
+            Set-MSSqlCertificate -Session $Global:MSSqlSession -InstanceName $oInstance.InstanceName -PfxPath $oPfx.PfxPath -Password $oPfx.Password -ErrorAction Stop
+        } catch {
+            [pscustomobject]@{ Success = $false; Error = "$_"; Warnings = @() }
+        }
+        foreach ($sWarning in $oResult.Warnings) { Write-Host "Warning: $sWarning" -ForegroundColor Yellow }
+        if (-not $oResult.Success) {
+            Write-Host "The certificate could not be prepared: $($oResult.Error)" -ForegroundColor Red
+            Write-Host "The configuration of the instance has not been changed." -ForegroundColor Red
+            Write-Host ""
+            return
+        }
+        $sKeyAccess = switch ($oResult.KeyAccess) {
+            "Granted"        { "read access granted to $($oResult.ServiceAccount)" }
+            "AlreadyGranted" { "$($oResult.ServiceAccount) already had read access" }
+            "NotNeeded"      { "not needed ($($oResult.ServiceAccount))" }
+            default          { "$($oResult.KeyAccess)" }
+        }
+        Write-Host "  [OK] Certificate imported in LocalMachine\My ($($oResult.KeyStorage) key)" -ForegroundColor Green
+        Write-Host "  [OK] Private key: $sKeyAccess" -ForegroundColor Green
+        Write-Host "  [OK] Instance configured with $($oResult.Thumbprint)" -ForegroundColor Green
+        Write-Host ""
+
+        # 8. Restart now or later
+        $sRestart = Invoke-YesNoCLIDialog -YN -Vertical `
+            -Message "SQL Server uses the new certificate after a restart of the instance. Restart $($oInstance.ServiceName) now?" `
+            -YesButtonText "&Restart now (connections will be cut)" -NoButtonText "&Later (at the next restart of the service)"
+        if ($sRestart -ne "Yes") {
+            Write-Host "The instance keeps its current certificate until $($oInstance.ServiceName) restarts." -ForegroundColor Yellow
+            Write-Host ""
+            return
+        }
+        Write-Host "Restarting $($oInstance.ServiceName) on $sServer ..." -ForegroundColor Cyan
+        $oRestart = Restart-MSSqlInstance -Session $Global:MSSqlSession -InstanceName $oInstance.InstanceName
+        if (-not $oRestart.Success) {
+            Write-Host "The restart failed: $($oRestart.Error) (service state: $($oRestart.ServiceState))" -ForegroundColor Red
+            Write-Host "Check the SQL Server ERRORLOG on $sServer." -ForegroundColor Red
+            Write-Host ""
+            return
+        }
+        $sDependents = if ($oRestart.DependentServices) { " (also restarted: $($oRestart.DependentServices -join ', '))" } else { "" }
+        Write-Host "  [OK] $($oInstance.ServiceName) restarted$sDependents" -ForegroundColor Green
+
+        # 9. Check the certificate now presented on the network (the instance may take a few seconds to listen)
+        if ($oInstance.TcpEnabled -and $oInstance.TcpPort) {
+            $oNow = $null
+            for ($i = 0; ($i -lt 6) -and -not $oNow; $i++) {
+                if ($i -gt 0) { Start-Sleep -Seconds 5 }
+                $oNow = try { Get-CertificateFromSqlServer -ComputerName $sServer -Port $oInstance.TcpPort -TimeoutSeconds 5 } catch { $null }
+            }
+            if (-not $oNow) {
+                Write-Host "Unable to read the certificate now presented on port $($oInstance.TcpPort)." -ForegroundColor Yellow
+            } elseif ($oNow.Thumbprint -eq $oResult.Thumbprint) {
+                Write-Host "  [OK] The instance now presents the new certificate." -ForegroundColor Green
+            } else {
+                Write-Host "Warning: the instance presents $($oNow.Subject) ($($oNow.Thumbprint)), not the new certificate. Check the SQL Server ERRORLOG." -ForegroundColor Yellow
+            }
+        }
+        Write-Host ""
+        return
+    }
+}
+
+function Read-CertificateFile {
+    # Loads every certificate held by a file: PEM (one or several blocks), DER, P7B or PFX/P12.
+    # A PFX is first opened without password, then the password is asked.
+    # Returns the certificates (nothing when the user gives up on the PFX password).
+    Param(
+        [Parameter(Mandatory)]
+        [string]$Path
+    )
+    $sPath = $Path.Trim().Trim('"').Trim("'")
+    if (-not (Test-Path -LiteralPath $sPath -PathType Leaf)) {
+        throw "Certificate file not found: $sPath"
+    }
+    $sPath = (Resolve-Path -LiteralPath $sPath).ProviderPath
+
+    $oCollection = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2Collection
+
+    # PEM: read every block (.NET only reads the first one of a bundle). A block can hold a
+    # single certificate or a PKCS#7 (the Windows PKI writes P7B files with a CERTIFICATE header).
+    $sText = [System.IO.File]::ReadAllText($sPath)
+    if ($sText -match '-----BEGIN (CERTIFICATE|PKCS7)-----') {
+        $sPemRegex = '-----BEGIN (?:CERTIFICATE|PKCS7)-----([A-Za-z0-9+/=\s]+?)-----END (?:CERTIFICATE|PKCS7)-----'
+        foreach ($oMatch in [regex]::Matches($sText, $sPemRegex)) {
+            $oCollection.Import([Convert]::FromBase64String(($oMatch.Groups[1].Value -replace '\s', '')))
+        }
+        foreach ($oCert in $oCollection) { $oCert }
+        return
+    }
+
+    $eType = try {
+        [System.Security.Cryptography.X509Certificates.X509Certificate2]::GetCertContentType($sPath)
+    } catch {
+        [System.Security.Cryptography.X509Certificates.X509ContentType]::Unknown
+    }
+    if ($eType -eq [System.Security.Cryptography.X509Certificates.X509ContentType]::Pfx) {
+        $sPassword = ""
+        $bAsked = $false
+        while ($true) {
+            try {
+                $oCollection.Import($sPath, $sPassword, [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::DefaultKeySet)
+                break
+            } catch {
+                if ($bAsked) {
+                    Write-Host "Cannot open the PFX with this password." -ForegroundColor Red
+                    $sRetry = Invoke-YesNoCLIDialog -YN -Message "Try another password?"
+                    if ($sRetry -ne "Yes") { return }
+                }
+                $ssPassword = Read-Host -AsSecureString -Prompt "PFX password"
+                $pBSTR = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($ssPassword)
+                try {
+                    $sPassword = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($pBSTR)
+                } finally {
+                    [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($pBSTR)
+                }
+                $bAsked = $true
+            }
+        }
+    } else {
+        try { $oCollection.Import($sPath) } catch { Write-Verbose "Collection import failed: $_" }
+        if ($oCollection.Count -eq 0) {
+            # Gives a meaningful error when the file is not a certificate
+            $oCollection.Add((New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($sPath))) | Out-Null
+        }
+    }
+    foreach ($oCert in $oCollection) { $oCert }
+}
+
+function Get-CertificateFromHostRace {
+    # Reads the certificate of host:port over HTTPS and SQL Server (TDS) at the same time; the first
+    # attempt that returns a certificate wins. A SQL Server port may keep a TLS attempt waiting, and
+    # the other way round, so trying one after the other could be slow.
+    # The losing attempt is asked to stop and ends in the background (bounded by its own timeout).
+    Param(
+        [Parameter(Mandatory)]
+        [string]$HostName,
+        [Parameter(Mandatory)]
+        [int]$Port
+    )
+    # Each attempt runs in its own runspace, with the two functions it needs
+    $oIss = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault()
+    foreach ($sFunction in "Get-CertificateFromUrl", "Get-CertificateFromSqlServer") {
+        $oIss.Commands.Add((New-Object System.Management.Automation.Runspaces.SessionStateFunctionEntry($sFunction, (Get-Command $sFunction).Definition)))
+    }
+    $sHostOnly = $HostName.Trim("[", "]")
+    $aAttempts = @(
+        [pscustomobject]@{ Name = "HTTPS"; Script = 'param($h, $p) Get-CertificateFromUrl -Url "https://${h}:$p"'; Host = $HostName; PS = $null; Handle = $null; Error = $null }
+        [pscustomobject]@{ Name = "SQL Server"; Script = 'param($h, $p) Get-CertificateFromSqlServer -ComputerName $h -Port $p -TdsOnly'; Host = $sHostOnly; PS = $null; Handle = $null; Error = $null }
+    )
+    foreach ($oAttempt in $aAttempts) {
+        $oAttempt.PS = [PowerShell]::Create($oIss).AddScript($oAttempt.Script).AddArgument($oAttempt.Host).AddArgument($Port)
+        $oAttempt.Handle = $oAttempt.PS.BeginInvoke()
+    }
+    $oWinner = $null
+    $oCertificate = $null
+    try {
+        $aPending = [System.Collections.ArrayList]@($aAttempts)
+        while ($aPending.Count -gt 0 -and -not $oCertificate) {
+            $iDone = [System.Threading.WaitHandle]::WaitAny([System.Threading.WaitHandle[]]@($aPending | ForEach-Object { $_.Handle.AsyncWaitHandle }))
+            $oAttempt = $aPending[$iDone]
+            $aPending.RemoveAt($iDone)
+            try {
+                $oResult = @($oAttempt.PS.EndInvoke($oAttempt.Handle) | Where-Object { $_ -is [System.Security.Cryptography.X509Certificates.X509Certificate2] })
+                if ($oResult.Count -gt 0) {
+                    $oCertificate = $oResult[0]
+                    $oWinner = $oAttempt
+                } else {
+                    $oAttempt.Error = if ($oAttempt.PS.Streams.Error.Count -gt 0) { "$($oAttempt.PS.Streams.Error[0])" } else { "no certificate" }
+                }
+            } catch {
+                $oInner = $_.Exception
+                while ($oInner.InnerException) { $oInner = $oInner.InnerException }
+                $oAttempt.Error = $oInner.Message
+            }
+        }
+    } finally {
+        foreach ($oAttempt in $aAttempts) {
+            if ($oAttempt.Handle.IsCompleted) {
+                $oAttempt.PS.Dispose()
+            } else {
+                $null = $oAttempt.PS.BeginStop($null, $null)
+            }
+        }
+    }
+    if (-not $oCertificate) {
+        throw ("No certificate from ${HostName}:$Port. " + (($aAttempts | ForEach-Object { "$($_.Name): $($_.Error)" }) -join " / "))
+    }
+    Write-Host "Certificate presented over $($oWinner.Name)." -ForegroundColor Cyan
+    return $oCertificate
+}
+
+function Get-CertificateFromInput {
+    # Loads the certificates designated by:
+    #   - a file path
+    #   - an HTTPS URL
+    #   - "server\instance[,port]" or "server,port": SQL Server syntaxes (without port, the port of
+    #     the instance is asked to the SQL Server Browser)
+    #   - "host[:port]" (port 443 by default): HTTPS and SQL Server at the same time, first answer wins
+    # For a server, the certificate it presents to its clients is returned.
+    Param(
+        [Parameter(Mandatory)]
+        [string]$InputString
+    )
+    $sInput = $InputString.Trim().Trim('"').Trim("'")
+    if ($sInput -match '^https://.+') {
+        Write-Host "Fetching certificate from $sInput ..." -ForegroundColor Cyan
+        return Get-CertificateFromUrl -Url $sInput
+    }
+    if (Test-Path -LiteralPath $sInput -PathType Leaf) {
+        return Read-CertificateFile -Path $sInput
+    }
+    if ($sInput -match '^(?<server>[^\\,:\s]+)(?:\\(?<instance>[^\\,:\s]+)(?:,(?<port>[0-9]{1,5}))?|,(?<port>[0-9]{1,5}))$') {
+        $hSql = @{ ComputerName = $Matches.server }
+        if ($Matches.instance) { $hSql.InstanceName = $Matches.instance }
+        if ($Matches.port) { $hSql.Port = [int]$Matches.port }
+        Write-Host "Fetching certificate from SQL Server $sInput ..." -ForegroundColor Cyan
+        return Get-CertificateFromSqlServer @hSql
+    }
+    $oHostPort = [regex]::Match($sInput, (Get-HostPortRegex -FullLine))
+    if ($oHostPort.Success) {
+        $sHost = $oHostPort.Groups["Host"].Value
+        $iPort = if ($oHostPort.Groups["Port"].Success) { [int]$oHostPort.Groups["Port"].Value } else { 443 }
+        Write-Host "Fetching certificate from ${sHost}:$iPort (HTTPS and SQL Server at the same time) ..." -ForegroundColor Cyan
+        return Get-CertificateFromHostRace -HostName $sHost -Port $iPort
+    }
+    throw "'$sInput' is neither an existing file, an HTTPS URL, a host[:port] nor a SQL Server instance (server\instance)"
+}
+
+function Get-SortedCertificateChain {
+    # Orders a set of certificates from the leaf to the root. Duplicates are removed and the
+    # certificates that are not part of the leaf's chain are appended at the end.
+    Param(
+        [System.Security.Cryptography.X509Certificates.X509Certificate2[]]$Certificates
+    )
+    $aCerts = @($Certificates | Where-Object { $_ } | Sort-Object -Property Thumbprint -Unique)
+    if ($aCerts.Count -le 1) { return $aCerts }
+    $aLeaves = @($aCerts | Where-Object {
+        $oCandidate = $_
+        -not ($aCerts | Where-Object { Test-CertificateIsParent -Parent $oCandidate -Child $_ })
+    })
+    $aOrdered = @()
+    $oCurrent = if ($aLeaves.Count -gt 0) { $aLeaves[0] } else { $aCerts[0] }
+    while ($oCurrent -and ($aOrdered.Count -eq 0 -or $aOrdered.Thumbprint -notcontains $oCurrent.Thumbprint)) {
+        $aOrdered += $oCurrent
+        $oChild = $oCurrent
+        $oCurrent = $aCerts | Where-Object { Test-CertificateIsParent -Parent $_ -Child $oChild } | Select-Object -First 1
+    }
+    $aOrdered += @($aCerts | Where-Object { $aOrdered.Thumbprint -notcontains $_.Thumbprint })
+    return $aOrdered
+}
+
+function Write-CertificateToHost {
+    # Displays the main information of a certificate, then validates its chain on this computer
+    # (ExtraCertificates are used as intermediates, e.g. the other certificates of a P7B).
+    Param(
+        [Parameter(Mandatory)]
+        [System.Security.Cryptography.X509Certificates.X509Certificate2]$Certificate,
+        [System.Security.Cryptography.X509Certificates.X509Certificate2[]]$ExtraCertificates
+    )
+    $oCert = $Certificate
+
+    function Write-Field {
+        Param(
+            [string]$Name,
+            [object]$Value,
+            [object]$Color   # console default when not set
+        )
+        $aValues = @($Value | Where-Object { $null -ne $_ -and "$_" -ne "" })
+        if ($aValues.Count -eq 0) { return }
+        # Label in green like Format-List in PowerShell 7; continuation lines are aligned under
+        # the value, without the ":"
+        $sPrefix = "{0,-20}: " -f $Name
+        foreach ($v in $aValues) {
+            Write-Host $sPrefix -NoNewline -ForegroundColor Green
+            if ($null -ne $Color) { Write-Host $v -ForegroundColor $Color } else { Write-Host $v }
+            $sPrefix = " " * 22
+        }
+    }
+
+    Write-Host ""
+    Write-Host "--------------------------- Certificate ---------------------------" -ForegroundColor Blue
+    Write-Field "Subject" $oCert.Subject
+
+    # Subject alternative names: one per line, grouped by type (DNS and IP first, then the
+    # others in the certificate order)
+    $aSAN = @(try { Get-CertificateSAN -Certificate $oCert -AsList } catch { })
+    if ($aSAN.Count -gt 0) {
+        $hSANLabels = [ordered]@{ DNS_NAME = "DNS"; IP_ADDRESS = "IP"; RFC822_NAME = "Email"; USER_PRINCIPLE_NAME = "UPN"; URL = "URL" }
+        $aSANLines = foreach ($sType in $hSANLabels.Keys) {
+            $aSAN | Where-Object { $_.Type -eq $sType } | ForEach-Object { "{0,-6}{1}" -f $hSANLabels[$sType], $_.Value }
+        }
+        $aSANLines += @($aSAN | Where-Object { -not $hSANLabels.Contains($_.Type) } | ForEach-Object { "{0} {1}" -f $_.Type, $_.Value })
+        Write-Field "SAN ($($aSAN.Count))" $aSANLines -Color Cyan
+    } else {
+        Write-Field "SAN" "(none)" -Color Yellow
+    }
+
+    $bSelfSigned = ($oCert.Subject -eq $oCert.Issuer)
+    Write-Field "Issuer" ($oCert.Issuer + $(if ($bSelfSigned) { "   (self-signed)" } else { "" }))
+    Write-Field "Serial number" $oCert.SerialNumber
+    Write-Field "Valid from" $oCert.NotBefore
+
+    $iDaysLeft = [int][Math]::Floor(($oCert.NotAfter - (Get-Date)).TotalDays)
+    $sExpiry, $cExpiry = if ($oCert.NotAfter -lt (Get-Date)) {
+        ("{0}   (expired)" -f $oCert.NotAfter), [System.ConsoleColor]::Red
+    } elseif ($oCert.NotBefore -gt (Get-Date)) {
+        ("{0}   (not yet valid)" -f $oCert.NotAfter), [System.ConsoleColor]::Yellow
+    } elseif ($iDaysLeft -lt 30) {
+        ("{0}   ({1} days left)" -f $oCert.NotAfter, $iDaysLeft), [System.ConsoleColor]::Yellow
+    } else {
+        ("{0}   ({1} days left)" -f $oCert.NotAfter, $iDaysLeft), [System.ConsoleColor]::Green
+    }
+    Write-Field "Valid to" $sExpiry -Color $cExpiry
+
+    Write-Field "Thumbprint (SHA1)" $oCert.Thumbprint
+    $oSHA256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        Write-Field "SHA256" (($oSHA256.ComputeHash($oCert.RawData) | ForEach-Object { $_.ToString("X2") }) -join "")
+    } finally {
+        $oSHA256.Dispose()
+    }
+
+    # Public key: PublicKey.Key does not support ECC keys on .NET Framework
+    $iKeySize = $null
+    try {
+        $iKeySize = $oCert.PublicKey.Key.KeySize
+    } catch {
+        try { $iKeySize = [System.Security.Cryptography.X509Certificates.ECDsaCertificateExtensions]::GetECDsaPublicKey($oCert).KeySize } catch {}
+    }
+    $sKeyAlgo = if ($oCert.PublicKey.Oid.FriendlyName) { $oCert.PublicKey.Oid.FriendlyName } else { $oCert.PublicKey.Oid.Value }
+    Write-Field "Public key" ($sKeyAlgo + $(if ($iKeySize) { " $iKeySize bits" } else { "" }))
+    Write-Field "Signature algorithm" $oCert.SignatureAlgorithm.FriendlyName
+
+    foreach ($oExt in $oCert.Extensions) {
+        if ($oExt -is [System.Security.Cryptography.X509Certificates.X509KeyUsageExtension]) {
+            Write-Field "Key usage" $oExt.KeyUsages.ToString()
+        } elseif ($oExt -is [System.Security.Cryptography.X509Certificates.X509EnhancedKeyUsageExtension]) {
+            $aEKU = foreach ($oOid in $oExt.EnhancedKeyUsages) {
+                if ($oOid.FriendlyName) { "{0} ({1})" -f $oOid.FriendlyName, $oOid.Value } else { $oOid.Value }
+            }
+            Write-Field "Enhanced key usage" $aEKU
+        } elseif ($oExt -is [System.Security.Cryptography.X509Certificates.X509BasicConstraintsExtension]) {
+            $sBC = if ($oExt.CertificateAuthority) {
+                "Certification authority" + $(if ($oExt.HasPathLengthConstraint) { " (path length $($oExt.PathLengthConstraint))" } else { "" })
+            } else {
+                "End entity"
+            }
+            Write-Field "Basic constraints" $sBC
+        }
+    }
+
+    $oTemplate = Get-CertificateTemplate -Certificate $oCert -WarningAction SilentlyContinue
+    if ($oTemplate -and ($oTemplate.Name -or $oTemplate.OID)) {
+        $sTemplate = if ($oTemplate.Name) { $oTemplate.Name } else { $oTemplate.OID }
+        if ($null -ne $oTemplate.MajorVersion) { $sTemplate += " (v$($oTemplate.MajorVersion).$($oTemplate.MinorVersion))" }
+        Write-Field "Template" $sTemplate
+    }
+    Write-Field "Subject key ID" (Get-CertificateSKI -Certificate $oCert)
+    Write-Field "Authority key ID" (Get-CertificateAKI -Certificate $oCert)
+    try {
+        $oURLs = Get-CertificateURL -Cert $oCert -WarningAction SilentlyContinue
+        Write-Field "CRL (CDP)" $oURLs.CDP
+        Write-Field "CA issuers (AIA)" $oURLs.AIA
+        Write-Field "OCSP" $oURLs.OCSP
+    } catch {
+        Write-Verbose "Cannot read certificate URLs: $_"
+    }
+    Write-Field "Private key" $(if ($oCert.HasPrivateKey) { "Yes" } else { "No" })
+
+    # Chain validation on this computer (revocation checked online, may take a few seconds)
+    Write-Host "-------------------------- Chain check ----------------------------" -ForegroundColor Blue
+    $oChain = New-Object System.Security.Cryptography.X509Certificates.X509Chain
+    try {
+        $oChain.ChainPolicy.RevocationMode = [System.Security.Cryptography.X509Certificates.X509RevocationMode]::Online
+        $oChain.ChainPolicy.RevocationFlag = [System.Security.Cryptography.X509Certificates.X509RevocationFlag]::ExcludeRoot
+        $oChain.ChainPolicy.UrlRetrievalTimeout = New-TimeSpan -Seconds 15
+        foreach ($oExtra in $ExtraCertificates) {
+            if ($oExtra.Thumbprint -ne $oCert.Thumbprint) { $oChain.ChainPolicy.ExtraStore.Add($oExtra) | Out-Null }
+        }
+        $bValid = $oChain.Build($oCert)
+        $sIndent = ""
+        foreach ($oElement in $oChain.ChainElements) {
+            $aStatus = @($oElement.ChainElementStatus | Where-Object { $_.Status -ne "NoError" })
+            $sLine = "{0}{1}" -f $sIndent, $oElement.Certificate.Subject
+            if ($aStatus.Count -gt 0) { Write-Host $sLine -ForegroundColor Yellow } else { Write-Host $sLine }
+            foreach ($oStatus in $aStatus) {
+                Write-Host ("{0}  ! {1}" -f $sIndent, $oStatus.StatusInformation.Trim()) -ForegroundColor Yellow
+            }
+            $sIndent += "  "
+        }
+        if ($bValid) {
+            Write-Host "The certificate chain is valid on this computer." -ForegroundColor Green
+        } else {
+            Write-Host "The certificate chain does not validate on this computer." -ForegroundColor Yellow
+        }
+    } catch {
+        Write-Host "Chain check failed: $_" -ForegroundColor Yellow
+    } finally {
+        $oChain.Reset()
+    }
+    Write-Host "-------------------------------------------------------------------" -ForegroundColor Blue
+    Write-Host ""
+}
+
+function Show-CertificateInWindowsViewer {
+    # Opens the certificate in the Windows certificate dialog and waits until it is closed
+    Param(
+        [Parameter(Mandatory)]
+        [System.Security.Cryptography.X509Certificates.X509Certificate2]$Certificate
+    )
+    $sTempFile = Join-Path ([System.IO.Path]::GetTempPath()) ($Certificate.Thumbprint + ".cer")
+    [System.IO.File]::WriteAllBytes($sTempFile, $Certificate.RawData)
+    Write-Host "Close the certificate window to continue..." -ForegroundColor Cyan
+    try {
+        # No quotes around the path: CryptExtOpenCER takes the rest of the command line as the
+        # file name, quotes included (Windows registers it as "CryptExtOpenCER %1")
+        Start-Process -FilePath "rundll32.exe" -ArgumentList "cryptext.dll,CryptExtOpenCER $sTempFile" -Wait
+    } finally {
+        Remove-Item -LiteralPath $sTempFile -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Show-CertificateOpenSSLText {
+    # Displays the full decoding of the certificate made by OpenSSL (all extensions, raw values)
+    Param(
+        [Parameter(Mandatory)]
+        [System.Security.Cryptography.X509Certificates.X509Certificate2]$Certificate,
+        [Parameter(Mandatory)]
+        [string]$OpenSSLPath
+    )
+    $sTempFile = Join-Path ([System.IO.Path]::GetTempPath()) ($Certificate.Thumbprint + ".der")
+    [System.IO.File]::WriteAllBytes($sTempFile, $Certificate.RawData)
+    try {
+        & $OpenSSLPath x509 -inform DER -in $sTempFile -noout -text | Out-Host
+    } finally {
+        Remove-Item -LiteralPath $sTempFile -Force -ErrorAction SilentlyContinue
+    }
+    Write-Host ""
+}
+
+function Get-CertificateFileInFolder {
+    # Certificate files of a folder (PEM, DER, P7B, PFX...), optionally with its subfolders
+    Param(
+        [Parameter(Mandatory)]
+        [string]$Path,
+        [switch]$Recurse
+    )
+    $aExtensions = @(".cer", ".crt", ".pem", ".der", ".p7b", ".p7c", ".pfx", ".p12")
+    Get-ChildItem -LiteralPath $Path -File -Recurse:$Recurse -ErrorAction SilentlyContinue |
+        Where-Object { $aExtensions -contains $_.Extension.ToLower() }
+}
+
+function Test-DialogAction {
+    # True when $Result is a dialog action (Back, Exit...) or nothing; -Action narrows to one action
+    Param(
+        [object]$Result,
+        [string]$Action = "*"
+    )
+    if ($null -eq $Result) { return ($Action -eq "*") }
+    return [bool]($Result.PSTypeNames -and $Result.PSTypeNames[0] -like "DialogResult.Action.$Action")
+}
+
+function Show-CertificateSource_CLI {
+    # Loads a certificate source (file path, HTTPS URL or host[:port]), lets the user pick the
+    # certificate when the source holds several, displays it and offers more views.
+    # Returns a DialogResult.Action.Exit when the user chose Exit, nothing on Back.
+    Param(
+        [Parameter(Mandatory)]
+        [string]$Source,
+        [string]$OpenSSLPath
+    )
+    $cSep = [System.ConsoleColor]::Blue
+    $aNavButtons = @(
+        New-CLIDialogButton -Text "&Back" -Back
+        New-CLIDialogButton -Text "&Exit" -Exit
+    )
+
+    $aCerts = try {
+        @(Get-SortedCertificateChain -Certificates @(Get-CertificateFromInput -InputString $Source))
+    } catch {
+        Write-Host "Failed to load the certificate: $_" -ForegroundColor Red
+        Write-Host ""
+        return
+    }
+    if ($aCerts.Count -eq 0) {
+        Write-Host "No certificate found." -ForegroundColor Yellow
+        Write-Host ""
+        return
+    }
+
+    while ($true) {
+        # Several certificates (P7B, PEM bundle, PFX with its chain): choose one
+        $oCert = if ($aCerts.Count -eq 1) {
+            $aCerts[0]
+        } else {
+            $aItems = for ($i = 0; $i -lt $aCerts.Count; $i++) {
+                $sRole = if ($i -eq 0) { "Leaf" } elseif ($aCerts[$i].Subject -eq $aCerts[$i].Issuer) { "Root" } else { "CA" }
+                [pscustomobject]@{ Index = $i; Role = $sRole; Subject = $aCerts[$i].Subject; Expires = $aCerts[$i].NotAfter.ToString("yyyy-MM-dd") }
+            }
+            $oCertSel = Select-CLIDialogObjectInArray -Objects @($aItems) `
+                -SelectedColumns @(@{ l = "Role"; e = { $_.Role } }, @{ l = "Subject"; e = { $_.Subject } }, @{ l = "Expires"; e = { $_.Expires } }) `
+                -SelectHeaderMessage "$($aCerts.Count) certificates in this file, which one do you want to view?" `
+                -OtherMenuItems $aNavButtons `
+                -FooterMessage "" -SeparatorColor $cSep -HeaderTextInSeparator -Space -DontShowPageNumberWhenOnlyOnePage
+            if (Test-DialogAction $oCertSel -Action "Exit") { return $oCertSel }
+            if (Test-DialogAction $oCertSel) { return }
+            $aCerts[$oCertSel.Value.Index]
+        }
+
+        Write-CertificateToHost -Certificate $oCert -ExtraCertificates $aCerts
+
+        # DNS and IP SAN: the ones the certificate request form accepts
+        $aRequestSAN = @(Get-CertificateSAN -Certificate $oCert -AsList | Where-Object { $_.Type -in "DNS_NAME", "IP_ADDRESS" } | ForEach-Object { $_.Value })
+        $aActions = @(
+            [pscustomobject]@{ Id = "NewCert"; Text = "Create a new certificate from this one (subject and SAN pre-filled)" }
+            [pscustomobject]@{ Id = "NewCSR"; Text = "Create only a CSR from this one (subject and SAN pre-filled)" }
+        )
+        if ($aRequestSAN.Count -gt 0) {
+            $aActions += [pscustomobject]@{ Id = "CopySAN"; Text = "Copy the DNS / IP SAN to the clipboard (one per line)" }
+        }
+        $aActions += @(
+            [pscustomobject]@{ Id = "Windows"; Text = "Open in the Windows certificate viewer" }
+            [pscustomobject]@{ Id = "OpenSSL"; Text = "Show the full details (OpenSSL)" }
+        )
+        while ($true) {
+            $oAction = Select-CLIDialogObjectInArray -Objects $aActions `
+                -SelectedColumns @{ l = "Action"; e = { $_.Text } } `
+                -SelectHeaderMessage "What do you want to do?" `
+                -OtherMenuItems $aNavButtons `
+                -FooterMessage "" -SeparatorColor $cSep -HeaderTextInSeparator -Space -DontShowPageNumberWhenOnlyOnePage
+            if (Test-DialogAction $oAction -Action "Exit") { return $oAction }
+            if (Test-DialogAction $oAction) { break }
+            switch ($oAction.Value.Id) {
+                "NewCert" {
+                    # Back in the wizard returns here; the result is not needed
+                    $null = New-PKISignedCertAndPFX_CLI -OpenSSLPath $OpenSSLPath -ItemsMode -InitialValues (ConvertTo-CertFormValues -Certificate $oCert)
+                }
+                "NewCSR" {
+                    $null = New-CSR_CLI -OpenSSLPath $OpenSSLPath -ItemsMode -InitialValues (ConvertTo-CertFormValues -Certificate $oCert)
+                }
+                "CopySAN" {
+                    Set-Clipboard -Value ($aRequestSAN -join [Environment]::NewLine)
+                    Write-Host "$($aRequestSAN.Count) SAN copied to the clipboard." -ForegroundColor Green
+                    Write-Host ""
+                }
+                "Windows" { Show-CertificateInWindowsViewer -Certificate $oCert }
+                "OpenSSL" { Show-CertificateOpenSSLText -Certificate $oCert -OpenSSLPath $OpenSSLPath }
+            }
+        }
+        # Back from the certificate: to the certificate list, or out when there is only one
+        if ($aCerts.Count -eq 1) { return }
+    }
+}
+
+function Show-Certificate_CLI {
+    # View a certificate: choose a working folder, then a certificate file of that folder.
+    # "Other source" accepts any file path, an HTTPS URL or a host[:port].
+    # Returns a DialogResult.Action.Exit when the user chose Exit, nothing on Back.
+    Param(
+        [string]$OpenSSLPath
+    )
+    $cSep = [System.ConsoleColor]::Blue
+    $sWorkingDir = (Get-ScriptDir -WorkingDir).TrimEnd("\")
+
+    while ($true) {
+        # 1. Folders holding certificate files (and the working folder itself when it holds some)
+        $aFolders = @()
+        $aRootFiles = @(Get-CertificateFileInFolder -Path $sWorkingDir)
+        if ($aRootFiles.Count -gt 0) {
+            $aFolders += [pscustomobject]@{ Name = "(working folder)"; Files = $aRootFiles.Count; Path = $sWorkingDir; Recurse = $false }
+        }
+        foreach ($oDir in (Get-ChildItem -LiteralPath $sWorkingDir -Directory -ErrorAction SilentlyContinue | Sort-Object -Property Name)) {
+            $iCount = @(Get-CertificateFileInFolder -Path $oDir.FullName -Recurse).Count
+            if ($iCount -gt 0) {
+                $aFolders += [pscustomobject]@{ Name = $oDir.Name; Files = $iCount; Path = $oDir.FullName; Recurse = $true }
+            }
+        }
+        $oFolderSel = Select-CLIDialogObjectInArray -Objects $aFolders `
+            -SelectedColumns @(@{ l = "Name"; e = { $_.Name } }, @{ l = "Files"; e = { $_.Files } }) `
+            -SelectHeaderMessage "Which certificate do you want to view?" `
+            -EmptyArrayMessage "No certificate file in the working folders - use 'Other source'" `
+            -OtherMenuItems @(
+                New-CLIDialogButton -Other -Text "&Other source" -Object { return "Other" }
+                New-CLIDialogButton -Text "&Back" -Back
+                New-CLIDialogButton -Text "&Exit" -Exit
+            ) `
+            -FooterMessage "" -SeparatorColor $cSep -HeaderTextInSeparator -Space -DontShowPageNumberWhenOnlyOnePage
+        if (Test-DialogAction $oFolderSel -Action "Exit") { return $oFolderSel }
+
+        if (Test-DialogAction $oFolderSel -Action "Other") {
+            $oInput = Read-CLIDialogValidatedValue `
+                -Header "Enter a certificate file path, an HTTPS URL, a host[:port] (HTTPS, else SQL Server) or a SQL Server instance (server\instance)" `
+                -PropertyName "Path / URL / Host" `
+                -ValidationMethod { param($v) return ($v.Trim().Length -gt 0) } `
+                -ErrorMessage "Value cannot be empty" `
+                -AllowBack
+            if (Test-DialogAction $oInput) { continue }
+            $sSource = if ($oInput.PSTypeNames -and $oInput.PSTypeNames[0] -eq "DialogResult.Value") { $oInput.Value } else { [string]$oInput }
+            $oResult = Show-CertificateSource_CLI -Source $sSource -OpenSSLPath $OpenSSLPath
+            if (Test-DialogAction $oResult -Action "Exit") { return $oResult }
+            continue
+        }
+        if (Test-DialogAction $oFolderSel) { return }
+        $oFolder = $oFolderSel.Value
+
+        # 2. Certificate files of the folder (opened directly when there is only one)
+        while ($true) {
+            $aFiles = @(Get-CertificateFileInFolder -Path $oFolder.Path -Recurse:$oFolder.Recurse | Sort-Object -Property FullName | ForEach-Object {
+                [pscustomobject]@{
+                    File     = $_.FullName.Substring($oFolder.Path.TrimEnd("\").Length + 1)
+                    Modified = $_.LastWriteTime.ToString("yyyy-MM-dd HH:mm")
+                    FullName = $_.FullName
+                }
+            })
+            if ($aFiles.Count -eq 0) { break }
+            $sFile = if ($aFiles.Count -eq 1) {
+                $aFiles[0].FullName
+            } else {
+                $oFileSel = Select-CLIDialogObjectInArray -Objects $aFiles `
+                    -SelectedColumns @(@{ l = "File"; e = { $_.File } }, @{ l = "Modified"; e = { $_.Modified } }) `
+                    -SelectHeaderMessage "Certificate files in $($oFolder.Name)" `
+                    -OtherMenuItems @(
+                        New-CLIDialogButton -Text "&Back" -Back
+                        New-CLIDialogButton -Text "&Exit" -Exit
+                    ) `
+                    -FooterMessage "" -SeparatorColor $cSep -HeaderTextInSeparator -Space -DontShowPageNumberWhenOnlyOnePage
+                if (Test-DialogAction $oFileSel -Action "Exit") { return $oFileSel }
+                if (Test-DialogAction $oFileSel) { break }
+                $oFileSel.Value.FullName
+            }
+            $oResult = Show-CertificateSource_CLI -Source $sFile -OpenSSLPath $OpenSSLPath
+            if (Test-DialogAction $oResult -Action "Exit") { return $oResult }
+            if ($aFiles.Count -eq 1) { break }
+        }
+    }
+}
+
 $OpenSSLPath = Get-OpenSSLLocation
 
 if (-not (Test-Path -Path $OpenSSLPath -PathType Leaf)) {
@@ -1513,9 +2813,14 @@ $Menu = New-Menu -Text "What do you want to do?" -Content @(
         New-MenuItem -Text "&Send CSR to CA" -Content { Send-CSRToCA_CLI | Out-Null }
         New-MenuItem -Text "&Issue pending certificate request" -Content { Invoke-IssueCSR_CLI | Out-Null }
         New-MenuItem -Text "&Get issued certificate" -Content { Get-IssuedCertificate_CLI | Out-Null }
-        New-MenuItem -Text "&Create PFX" -Content { New-PFX_CLI -OpenSSLPath $OpenSSLPath }    
+        New-MenuItem -Text "&Create PFX" -Content { New-PFX_CLI -OpenSSLPath $OpenSSLPath | Out-Null }
     ) -OtherMenuItems $aOtherMenuItems -SeparatorColor Blue
+    New-MenuItem -Text "&View a certificate" -Content { Show-Certificate_CLI -OpenSSLPath $OpenSSLPath }
     New-MenuItem -Text "E&xport / Convert certificate" -Content { Convert-Certificate_CLI -OpenSSLPath $OpenSSLPath | Out-Null }
+    New-Menu -Text "Change the certificate of an application se&rver" -Content @(
+        New-MenuItem -Text "&RDS server" -Content { Set-RDSCertificate_CLI | Out-Null }
+        New-MenuItem -Text "&SQL Server" -Content { Set-MSSqlCertificate_CLI }
+    ) -OtherMenuItems $aOtherMenuItems -SeparatorColor Blue
     New-MenuItem -Text "&Settings" -Content { Edit-ScriptConfig }
 ) -OtherMenuItems $mExit -SeparatorColor Blue
 

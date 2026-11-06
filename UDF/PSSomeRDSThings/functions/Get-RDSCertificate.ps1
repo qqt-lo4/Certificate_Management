@@ -19,10 +19,14 @@ function Get-RDSCertificate {
     .PARAMETER DeploymentMode
     Optional override. 'Broker' or 'Standalone'. Auto-detected when omitted.
 
+    .PARAMETER Credential
+    Broker mode: administrator credential used to open the broker's Server Manager workflow
+    endpoint (single hop from the caller). Current user when omitted.
+
     .OUTPUTS
     [pscustomobject] with DeploymentMode, ComputerName, Certificates[].
-    Each Certificates[] entry has Role, Thumbprint, Level (Broker only), Subject, SAN, NotBefore,
-    NotAfter, IssuedTo, IssuedBy.
+    Each Certificates[] entry has Role, Thumbprint, Level (Broker only), Available (role installed
+    in the deployment), Subject, SAN, NotBefore, NotAfter, IssuedTo, IssuedBy, RawData (DER bytes).
 
     .EXAMPLE
     $info = Get-RDSCertificate -Session $session
@@ -30,9 +34,13 @@ function Get-RDSCertificate {
 
     .NOTES
         Author  : Loïc Ade
-        Version : 1.0.0
+        Version : 1.1.0
 
         CHANGELOG:
+
+        Version 1.1.0 - 2026-10-25 - Loïc Ade
+            - Added -Credential (Broker mode) and the Available property
+            - RawData is now returned (needed to renew the current certificate)
 
         Version 1.0.0 - 2026-05-18 - Loïc Ade
             - Initial release
@@ -44,13 +52,14 @@ function Get-RDSCertificate {
         [Parameter(Mandatory)]
         [System.Management.Automation.Runspaces.PSSession]$Session,
         [ValidateSet('Broker','Standalone')]
-        [string]$DeploymentMode
+        [string]$DeploymentMode,
+        [pscredential]$Credential
     )
     if (-not $DeploymentMode) {
         $DeploymentMode = Get-RDSDeploymentMode -Session $Session
     }
     $aRaw = switch ($DeploymentMode) {
-        'Broker'     { Get-RDSBrokerCertificate -Session $Session }
+        'Broker'     { Get-RDSBrokerCertificate -Session $Session -Credential $Credential }
         'Standalone' { Get-RDSStandaloneCertificate -Session $Session }
     }
     $aCerts = foreach ($oItem in $aRaw) {
@@ -69,12 +78,14 @@ function Get-RDSCertificate {
             Role       = $oItem.Role
             Thumbprint = $oItem.Thumbprint
             Level      = $oItem.Level
+            Available  = if ($null -ne $oItem.Available) { [bool]$oItem.Available } else { $true }
             Subject    = $oItem.Subject
             SAN        = $hSAN
             NotBefore  = $oItem.NotBefore
             NotAfter   = $oItem.NotAfter
             IssuedTo   = $oItem.IssuedTo
             IssuedBy   = $oItem.IssuedBy
+            RawData    = $oItem.RawData
         }
     }
     return [pscustomobject]@{

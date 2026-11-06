@@ -30,6 +30,9 @@ function Get-RDSDeploymentMode {
         [System.Management.Automation.Runspaces.PSSession]$Session
     )
     return Invoke-Command -Session $Session -ScriptBlock {
+        # The remote session inherits the caller's UI culture (e.g. fr-FR). RemoteDesktop only ships
+        # the resources of the server's language, so Import-Module fails on a mismatch: use en-US.
+        [System.Threading.Thread]::CurrentThread.CurrentUICulture = [System.Globalization.CultureInfo]::GetCultureInfo('en-US')
         $oFeature = Get-WindowsFeature -Name 'RDS-Connection-Broker' -ErrorAction SilentlyContinue
         if ($oFeature -and $oFeature.Installed) {
             return 'Broker'

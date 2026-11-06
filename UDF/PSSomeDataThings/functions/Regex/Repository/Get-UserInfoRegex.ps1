@@ -16,8 +16,11 @@ function Get-UserInfoRegex {
 
     .NOTES
         Author  : Loïc Ade
-        Version : 1.0.0
+        Version : 1.1.0
+
+        1.1.0 (2026-11-06)
+            - ":" accepted (RFC 3986 userinfo): "user:pass@" was refused
     #>
-    $userInfoChars = "(?:[a-zA-Z0-9._~!$&'()*+,;=-]|%[0-9a-fA-F]{2})"
+    $userInfoChars = "(?:[a-zA-Z0-9._~!$&'()*+,;=:-]|%[0-9a-fA-F]{2})"
     return "(?<UserInfo>$userInfoChars*@)?"
 }

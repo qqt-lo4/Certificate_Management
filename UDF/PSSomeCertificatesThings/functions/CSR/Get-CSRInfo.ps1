@@ -24,7 +24,11 @@ function Get-CSRInfo {
 
     .NOTES
         Author  : Loïc Ade
-        Version : 1.0.0
+        Version : 1.0.1
+
+        1.0.1 (2026-11-06)
+            - IPv6 SAN decoded correctly ("2001:db8::1"): the hex dump was split on spaces,
+              which gave "20:01:0d:b8:00..." with empty items and a line break
     #>
     Param(
         [Parameter(Mandatory)]
@@ -38,13 +42,10 @@ function Get-CSRInfo {
             )
             $sType = Convert-SANTypeToString $ComAlternativeName.Type 
             $sValue = switch ($sType) {
-                "IP_ADDRESS" { 
-                    $aIPItems = $ComAlternativeName.RawData(0x4).Split(" ")
-                    if ($aIPItems.Count -eq 4) {
-                        ($aIPItems | ForEach-Object { "0x" + $_ } | ForEach-Object { [int]$_ }) -join "."
-                    } else {
-                        $aIPItems -join ":"
-                    }
+                "IP_ADDRESS" {
+                    # Address bytes (base64: XCN_CRYPT_STRING_BASE64 = 1), 4 for IPv4 or 16 for IPv6
+                    $aBytes = [Convert]::FromBase64String($ComAlternativeName.RawData(1))
+                    (New-Object System.Net.IPAddress (,$aBytes)).ToString()
                 }
                 Default { $ComAlternativeName.strValue }
             }

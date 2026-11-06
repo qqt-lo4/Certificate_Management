@@ -18,7 +18,11 @@
 
     .NOTES
         Author  : Loïc Ade
-        Version : 1.0.0
+        Version : 1.1.0
+
+        1.1.0 (2026-11-06)
+            - The prefix length is not truncated any more: searched in a text,
+              "2001:db8::/129" gave "2001:db8::/1"
     #>
     Param(
         [switch]$FullLine,
@@ -38,6 +42,7 @@
     } else {
         $sResult = "(?<ipv6>$sIPv6Regex)\/(?<prefixlength>$sPrefixLengthRegex)"
     }
+    $sResult += "(?![0-9])"
     
     if ($FullLine) {
         return "^$sResult$"

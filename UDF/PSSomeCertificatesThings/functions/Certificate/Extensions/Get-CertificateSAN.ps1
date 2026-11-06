@@ -15,10 +15,16 @@ function Get-CertificateSAN {
     .PARAMETER Certificate
         The X509Certificate2 to read the SAN extension from.
 
+    .PARAMETER AsList
+        Return one object per entry (Type, Value), in the order of the certificate, instead of
+        a hashtable grouped by type. Same shape as the SAN property of Get-CSRInfo.
+
     .OUTPUTS
         [hashtable]. Keys are SAN type names (DNS_NAME, IP_ADDRESS, ...). Values are string[].
         Types with no entries are omitted. Returns an empty hashtable when the certificate has no
         SAN extension.
+        With -AsList: [PSCustomObject] with Type and Value properties, one per entry (nothing when
+        the certificate has no SAN extension).
 
     .EXAMPLE
         $san = Get-CertificateSAN -Certificate $cert
@@ -28,11 +34,19 @@ function Get-CertificateSAN {
     .EXAMPLE
         (Get-CertificateSAN $cert).DNS_NAME | ForEach-Object { "dns: $_" }
 
+    .EXAMPLE
+        Get-CertificateSAN $cert -AsList | Where-Object Type -in "DNS_NAME", "IP_ADDRESS"
+
     .NOTES
         Author  : Loïc Ade
-        Version : 1.0.0
+        Version : 1.1.0
 
         CHANGELOG:
+
+        Version 1.1.0 - 2026-11-06 - Loïc Ade
+            - New AsList switch: one object (Type, Value) per entry, in the certificate order
+            - IPv6 SAN decoded correctly ("2001:db8::1"): the hex dump was split on spaces,
+              which gave "20:01:0d:b8:00..." with empty items and a line break
 
         Version 1.0.0 - 2026-04-22 - Loïc Ade
             - Initial release
@@ -40,10 +54,11 @@ function Get-CertificateSAN {
             - Groups entries by SAN type using the same type names as Get-CSRInfo
     #>
     [CmdletBinding()]
-    [OutputType([hashtable])]
+    [OutputType([hashtable], [PSCustomObject])]
     Param(
         [Parameter(Mandatory, Position = 0)]
-        [System.Security.Cryptography.X509Certificates.X509Certificate2]$Certificate
+        [System.Security.Cryptography.X509Certificates.X509Certificate2]$Certificate,
+        [switch]$AsList
     )
     Begin {
         function Convert-SANTypeToString {
@@ -72,12 +87,9 @@ function Get-CertificateSAN {
             )
             switch ($TypeName) {
                 "IP_ADDRESS" {
-                    $aIPItems = $ComAlternativeName.RawData(0x4).Split(" ")
-                    if ($aIPItems.Count -eq 4) {
-                        ($aIPItems | ForEach-Object { "0x" + $_ } | ForEach-Object { [int]$_ }) -join "."
-                    } else {
-                        $aIPItems -join ":"
-                    }
+                    # Address bytes (base64: XCN_CRYPT_STRING_BASE64 = 1), 4 for IPv4 or 16 for IPv6
+                    $aBytes = [Convert]::FromBase64String($ComAlternativeName.RawData(1))
+                    (New-Object System.Net.IPAddress (,$aBytes)).ToString()
                 }
                 Default { $ComAlternativeName.strValue }
             }
@@ -86,7 +98,10 @@ function Get-CertificateSAN {
     Process {
         $hResult = @{}
         $oSANExt = $Certificate.Extensions | Where-Object { $_.Oid.Value -eq "2.5.29.17" } | Select-Object -First 1
-        if (-not $oSANExt) { return $hResult }
+        if (-not $oSANExt) {
+            if ($AsList) { return }
+            return $hResult
+        }
 
         $oCom = New-Object -ComObject X509enrollment.CX509ExtensionAlternativeNames
         $sB64 = [Convert]::ToBase64String($oSANExt.RawData)
@@ -95,11 +110,16 @@ function Get-CertificateSAN {
         foreach ($an in $oCom.AlternativeNames) {
             $sType = Convert-SANTypeToString $an.Type
             $sValue = Convert-AlternativeNameValue $an $sType
+            if ($AsList) {
+                [PSCustomObject]@{ Type = $sType; Value = $sValue }
+                continue
+            }
             if (-not $hResult.Contains($sType)) {
                 $hResult[$sType] = @()
             }
             $hResult[$sType] += $sValue
         }
+        if ($AsList) { return }
         return $hResult
     }
 }
