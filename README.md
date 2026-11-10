@@ -3,7 +3,7 @@
 <div>
   <img src="icon.png" alt="icon" width="128" align="left" style="margin-right: 16px;" />
 
-  A PowerShell CLI tool for managing X.509 certificates: CSR generation with OpenSSL, submission to a Windows PKI (ADCS), certificate retrieval, and PFX creation. Features an interactive wizard with back navigation for a guided experience.
+  A PowerShell CLI tool for managing X.509 certificates: CSR generation with OpenSSL, submission to a Windows PKI (ADCS), certificate retrieval and PFX creation, certificate viewing (files, HTTPS and SQL Server endpoints), and certificate renewal on RDS and SQL Server servers. Features an interactive wizard with back navigation for a guided experience.
 
   ![PowerShell](https://img.shields.io/badge/PowerShell-5.1%2B-blue)
   ![Windows](https://img.shields.io/badge/Windows-10%2F11-0078D6)
@@ -19,18 +19,21 @@
 - **PKI Integration**: Submit CSR, issue and retrieve certificates from a Windows ADCS via ICertRequest COM
 - **PFX Creation**: Merge certificate chain and private key into a PFX with OpenSSL
 - **Advanced Mode**: Individual access to each step (CSR, submit, issue, retrieve, PFX)
-- **Certificate Viewer**: Inspect a certificate from a file (PEM, DER, P7B, PFX), an HTTPS URL or a host, with chain check
+- **Sign a Provided CSR**: Review a CSR sent by someone else, choose CA and template, get the signed certificate and chain (no PFX: the private key stays with the requester)
+- **Export / Convert**: Convert a PFX to PFX, PEM (combined or separate) or DER; an unencrypted private key always ends up in a password-protected ZIP
+- **Certificate Viewer**: Inspect a certificate from a file (PEM, DER, P7B, PFX), an HTTPS URL, a host or a SQL Server instance, with chain check, then create a new certificate from it
 - **RDS Certificate Deployment**: Push a PFX to a Remote Desktop Services server (Connection Broker roles or standalone RDP listener)
+- **SQL Server Certificate Renewal**: Renew the TLS certificate of a SQL Server instance, prepared without interruption, restart now or later
 - **Configurable**: CA and template name filters saved in a JSON config file
 
 ## Requirements
 
 - Windows 10/11
 - PowerShell 5.1 or later
-- OpenSSL (included in `tools/OpenSSL-Win64/`)
+- OpenSSL (included in `tools/OpenSSL-Win64/`) and 7-Zip (included in `tools/7-Zip/`)
 - Access to a Windows ADCS Certificate Authority
 - Active Directory module (for CA and template discovery)
-- For RDS deployment: WinRM access and administrator rights on the target RDS server
+- For RDS and SQL Server renewal: WinRM access and administrator rights on the target server
 
 ## Quick Start
 
@@ -39,22 +42,13 @@
 ```
 
 The main menu offers:
-1. **Create CSR, Sign with PKI and create PFX** - Full guided workflow (item-by-item or full DN)
-2. **Advanced** - Individual steps for partial workflows
-3. **View a certificate** - Display the details of a certificate
-4. **Change the certificate of an application server** - **RDS server** or **SQL Server**
-5. **Settings** - Configure CA and template name filters
-
-## SQL Server Certificate Renewal
-
-1. **Server** - Enter the SQL Server computer; a PSSession is opened (administrator rights)
-2. **Instances** - The instances are detected, with the configured certificate and the one presented on the network (a difference means a restart is pending); choose the instance to update
-3. **Certificate source** - Same choices as for RDS: renew with the same parameters, generate a new certificate, or use an existing PFX
-4. **Checks** - Expiration, chain, server name in the SAN, Server Authentication usage (warnings only)
-5. **Preparation, without interruption** - Import in `LocalMachine\My`, read access to the private key for the service account (without it the instance cannot start), thumbprint written in the instance configuration
-6. **Restart** - Now (connections are cut, then the certificate presented is checked) or later (the new certificate is used at the next restart of the service)
-
-The encryption settings (ForceEncryption...) are never changed: only the certificate is renewed.
+1. **Create CSR, Sign with PKI and create PFX** - Full guided workflow (item-by-item, full DN, or imported from an existing certificate)
+2. **Sign a provided CSR** - Sign a CSR received from someone else
+3. **Advanced certificate generation** - Individual steps for partial workflows
+4. **View a certificate** - Display the details of a certificate
+5. **Export / Convert certificate** - Convert a PFX to other formats
+6. **Change the certificate of an application server** - **RDS server** or **SQL Server**
+7. **Settings** - Configure CA and template name filters
 
 ## Certificate Viewer
 
@@ -87,6 +81,17 @@ In broker mode, the tool calls the `RDManagement` commands through the broker's 
 
 In standalone mode (no Connection Broker), the certificate is imported in `LocalMachine\My`, NETWORK SERVICE gets read access to the private key, and the certificate is bound to the `RDP-tcp` listener.
 
+## SQL Server Certificate Renewal
+
+1. **Server** - Enter the SQL Server computer; a PSSession is opened (administrator rights)
+2. **Instances** - The instances are detected, with the configured certificate and the one presented on the network (a difference means a restart is pending); choose the instance to update
+3. **Certificate source** - Same choices as for RDS: renew with the same parameters, generate a new certificate, or use an existing PFX
+4. **Checks** - Expiration, chain, server name in the SAN, Server Authentication usage (warnings only)
+5. **Preparation, without interruption** - Import in `LocalMachine\My`, read access to the private key for the service account (without it the instance cannot start), thumbprint written in the instance configuration
+6. **Restart** - Now (connections are cut, then the certificate presented is checked) or later (the new certificate is used at the next restart of the service)
+
+The encryption settings (ForceEncryption...) are never changed: only the certificate is renewed. SQL Server reads its certificate at startup, so a restart of the instance is always needed for the new certificate to be used.
+
 ## Workflow
 
 1. **Certificate Object** - Enter the Distinguished Name (item-by-item or full DN format)
@@ -106,6 +111,7 @@ Certificate_Management/
 ├── input/                        # Configuration files
 │   └── config.json               # CA and template filters
 ├── tools/
+│   ├── 7-Zip/                    # 7-Zip binaries (password-protected exports)
 │   └── OpenSSL-Win64/            # OpenSSL binaries
 ├── working/                      # Generated certificates
 ├── UDF/                          # PowerShell modules
@@ -115,7 +121,8 @@ Certificate_Management/
 │   ├── PSSomeCLIThings/          # CLI dialog framework
 │   ├── PSSomeCoreThings/         # Core utilities
 │   ├── PSSomeDataThings/         # Data validation, regex
-│   ├── PSSomeMSSqlThings/        # SQL Server instances and certificate renewal
+│   ├── PSSomeFileThings/         # 7-Zip archives, safe file names
+│   ├── PSSomeMSSqlThings/        # SQL Server instances, certificate read and renewal
 │   ├── PSSomeNetworkThings/      # Network utilities
 │   └── PSSomeRDSThings/          # RDS certificate read / deployment
 ├── LICENSE
@@ -138,11 +145,23 @@ These filters can also be edited from the **Settings** menu.
 ## Release Notes
 
 ### 2.7
-- Added "View a certificate": shows the details and the chain check of a certificate taken from the working folders, a file (PEM, DER, P7B, PFX), an HTTPS URL or a host; it can then be opened in the Windows certificate viewer or decoded with OpenSSL
+- Added "View a certificate": choose a working folder then a certificate file, or enter a file path (PEM, DER, P7B, PFX), an HTTPS URL, a `host[:port]` or a SQL Server instance (`server\instance`, `server,port`). For a `host[:port]`, HTTPS and SQL Server are tried at the same time and the first answer wins. Shows the details (SAN one per line), the chain check, then lets you create a new certificate or a CSR from it, copy its DNS / IP SAN, open it in the Windows certificate viewer or decode it with OpenSSL
+- Added "SQL Server" certificate renewal: instance detection, certificate prepared without interruption (import, private key access for the service account, instance configuration), restart now or later, check of the certificate presented after the restart. Encryption settings are never changed
+- "Change the certificate of an RDS server" moved into a new "Change the certificate of an application server" sub-menu, next to SQL Server
 - "Import from existing certificate" now also accepts a PFX, a P7B or a PEM bundle (the leaf certificate is used)
+- Every list of the new menus offers Back and Exit
+- Fixed: a `host:port` was refused, and the certificate name was not extracted from `<name>_<date>` working folders
+- New `PSSomeMSSqlThings` module
 
 ### 2.6
 - Added "Change the certificate of an RDS server": shows the current certificates, deploys a PFX on a Connection Broker (role selection) or on a standalone Session Host (RDP listener). The certificate can be renewed with the same parameters, regenerated with the PKI, or taken from an existing PFX.
+
+### 2.5
+- Added "Sign a provided CSR": review the CSR, choose the CA and the template, get the signed certificate and chain in a working folder named after the CN (no PFX)
+- Added "Export / Convert certificate": PFX to PFX (with or without password), PEM combined, PEM separate or DER; an unencrypted private key is stored in a password-protected ZIP (AES-256 or ZipCrypto)
+
+### 2.4
+- Added "Import from existing certificate" under Advanced > New Certificate Request to generate a CSR only from an existing certificate
 
 ### 2.3
 - First public version
