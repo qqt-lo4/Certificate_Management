@@ -40,7 +40,7 @@ Write-Progress -Activity "Loading script modules" -Status "Loading end" -Percent
 #endregion Include
 
 #region script info
-#scriptVersion=2.7
+#scriptVersion=2.8
 #endregion script info
 
 #region Release notes
@@ -141,6 +141,13 @@ Changed:
 - Fixed: a host:port ("server.lan:443") was refused when importing or viewing a certificate,
   and the certificate name was not extracted from a "<name>_<date>" working folder (the whole
   folder name was used for the files) - both came from the DNS regex of PSSomeDataThings.
+
+2.8 (2026-11-12):
+- Added an expiring-certificate report with template inclusion/exclusion filters, bounded
+    history lookup based on template validity, renewal deduplication by CN/SAN, a prefilled
+    PKI request workflow, and Excel-friendly CSV export.
+- Added NetScaler ADC certificate discovery through a dedicated read-only Nitro module,
+    available under the application server certificate menu.
 
 #>
 #endregion Release notes

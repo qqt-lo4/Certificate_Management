@@ -151,6 +151,10 @@ These filters can also be edited from the **Settings** menu.
 
 ## Release Notes
 
+### 2.8
+- Added an expiring-certificate report with template inclusion/exclusion, template-validity-bounded history lookup, renewal deduplication by CN/SAN, a prefilled PKI request workflow and Excel-friendly CSV export
+- Added dynamic NetScaler ADC SSL endpoint discovery through a dedicated read-only Nitro module, under the application server certificate menu
+
 ### 2.7
 - Added "View a certificate": choose a working folder then a certificate file, or enter a file path (PEM, DER, P7B, PFX), an HTTPS URL, a `host[:port]` or a SQL Server instance (`server\instance`, `server,port`). For a `host[:port]`, HTTPS and SQL Server are tried at the same time and the first answer wins. Shows the details (SAN one per line), the chain check, then lets you create a new certificate or a CSR from it, copy its DNS / IP SAN, open it in the Windows certificate viewer or decode it with OpenSSL
 - Added "SQL Server" certificate renewal: instance detection, certificate prepared without interruption (import, private key access for the service account, instance configuration), restart now or later, check of the certificate presented after the restart. Encryption settings are never changed
