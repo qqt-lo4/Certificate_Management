@@ -51,6 +51,15 @@ function Get-CertificateTemplateDetails {
             }
         }
 
+        function ConvertFrom-PKIPeriodToDays {
+            Param([byte[]]$Bytes)
+            if (-not $Bytes -or $Bytes.Count -ne 8) { return $null }
+            $iValue = [BitConverter]::ToInt64($Bytes, 0)
+            $tsSpan = [TimeSpan]::FromTicks(-$iValue)
+            if ($tsSpan.TotalDays -le 0) { return $null }
+            return [int][Math]::Ceiling($tsSpan.TotalDays)
+        }
+
         # --- Helper: decode pKIKeyUsage byte array to flags ---
         function ConvertFrom-KeyUsage {
             Param([byte[]]$Bytes)
@@ -258,6 +267,7 @@ function Get-CertificateTemplateDetails {
                 schemaVersion        = $iSchemaVersion
                 templateOID          = $oTpl.'msPKI-Cert-Template-OID'
                 validity             = ConvertFrom-PKIPeriod $oTpl.pKIExpirationPeriod
+                validityDays         = ConvertFrom-PKIPeriodToDays $oTpl.pKIExpirationPeriod
                 renewalPeriod        = ConvertFrom-PKIPeriod $oTpl.pKIOverlapPeriod
                 minimumKeySize       = $oTpl.'msPKI-Minimal-Key-Size'
                 keySpec              = $sKeySpec

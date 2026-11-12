@@ -26,10 +26,19 @@ function Get-CAIssuedCertificates {
     .PARAMETER Template
         Filter by certificate template name. Optional.
 
+    .PARAMETER IssuedOnFrom
+        Return certificates resolved on or after this date. Optional.
+
+    .PARAMETER IncludeSAN
+        Decode the certificate SAN extension and return it as a hashtable.
+
+    .PARAMETER IncludeRawCertificate
+        Include the raw certificate bytes in the result.
+
     .OUTPUTS
         [PSCustomObject[]] Certificate records with RequestID, CommonName,
         CertificateTemplate, NotBefore, NotAfter, SerialNumber, RequesterName,
-        CertificateHash, SubmittedWhen.
+        CertificateHash, SubmittedWhen, ResolvedWhen, and optional SAN/RawCertificate.
 
     .EXAMPLE
         Get-CAIssuedCertificates -CAName "CompanyCA" -ComputerName "PKI01"
@@ -59,14 +68,20 @@ function Get-CAIssuedCertificates {
 
         [int]$MaxResults = 100,
 
-        [string]$Template
+        [string]$Template,
+
+        [datetime]$IssuedOnFrom,
+
+        [switch]$IncludeSAN,
+
+        [switch]$IncludeRawCertificate
     )
 
     $hSplitParams = Split-RemoteAndNativeParameters
     $hSplitParamsRemote = $hSplitParams.Remote
 
-    return Invoke-Command @hSplitParamsRemote -ScriptBlock {
-        param($CAName, $MaxResults, $Template)
+    $aCertificates = Invoke-Command @hSplitParamsRemote -ScriptBlock {
+        param($CAName, $MaxResults, $Template, $IssuedOnFrom, $IncludeSAN, $IncludeRawCertificate)
 
         $sConfig = "$env:COMPUTERNAME\$CAName"
 
@@ -77,6 +92,10 @@ function Get-CAIssuedCertificates {
             # Restrict to issued certificates (Disposition = 20)
             $iDispCol = $oView.GetColumnIndex($false, "Disposition")
             $oView.SetRestriction($iDispCol, 1, 0, 20)  # CVR_SEEK_EQ = 1
+            if ($null -ne $IssuedOnFrom) {
+                $iIssuedOnCol = $oView.GetColumnIndex($false, "Request.ResolvedWhen")
+                $oView.SetRestriction($iIssuedOnCol, 16, 0, $IssuedOnFrom)  # CVR_SEEK_GE
+            }
 
             # Define output columns
             $aColumnNames = @(
@@ -89,7 +108,9 @@ function Get-CAIssuedCertificates {
                 "RequesterName"
                 "CertificateHash"
                 "Request.SubmittedWhen"
+                "Request.ResolvedWhen"
             )
+            if ($IncludeSAN -or $IncludeRawCertificate) { $aColumnNames += "RawCertificate" }
 
             $oView.SetResultColumnCount($aColumnNames.Count)
             foreach ($sCol in $aColumnNames) {
@@ -108,7 +129,8 @@ function Get-CAIssuedCertificates {
                     $sKey = $sCol -replace '^Request\.', ''
                     if ($oColEnum.Next() -ne -1) {
                         try {
-                            $hCert[$sKey] = $oColEnum.GetValue(0)
+                            $iOutputType = if ($sCol -eq "RawCertificate" -and $IncludeRawCertificate) { 1 } else { 0 }
+                            $hCert[$sKey] = $oColEnum.GetValue($iOutputType)
                         } catch {
                             $hCert[$sKey] = $null
                         }
@@ -143,5 +165,35 @@ function Get-CAIssuedCertificates {
         } finally {
             try { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($oView) | Out-Null } catch {}
         }
-    } -ArgumentList $hSplitParams.Native.CAName, $hSplitParams.Native.MaxResults, $hSplitParams.Native.Template
+    } -ArgumentList $hSplitParams.Native.CAName, $hSplitParams.Native.MaxResults, $hSplitParams.Native.Template, `
+        $hSplitParams.Native.IssuedOnFrom, $hSplitParams.Native.IncludeSAN, $hSplitParams.Native.IncludeRawCertificate
+
+    if ($IncludeSAN) {
+        foreach ($oCertificate in $aCertificates) {
+            $hSAN = @{}
+            try {
+                $oRawCertificate = $oCertificate.RawCertificate
+                if ($oRawCertificate -is [byte[]] -and $oRawCertificate.Length -gt 0 -and $oRawCertificate[0] -eq 0x30) {
+                    $aRawCertificate = $oRawCertificate
+                } else {
+                    $sEncodedCertificate = if ($oRawCertificate -is [byte[]]) {
+                        [System.Text.Encoding]::ASCII.GetString($oRawCertificate)
+                    } else {
+                        [string]$oRawCertificate
+                    }
+                    $sEncodedCertificate = $sEncodedCertificate -replace '-----BEGIN CERTIFICATE-----|-----END CERTIFICATE-----|\s', ''
+                    $aRawCertificate = [Convert]::FromBase64String($sEncodedCertificate)
+                }
+                if ($aRawCertificate.Length -gt 0) {
+                    $oX509Certificate = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2(,$aRawCertificate)
+                    $hSAN = Get-CertificateSAN -Certificate $oX509Certificate
+                }
+            } catch {
+                Write-Verbose "Could not decode SAN for request $($oCertificate.RequestID): $_"
+            }
+            $oCertificate | Add-Member -MemberType NoteProperty -Name SAN -Value $hSAN
+            if (-not $IncludeRawCertificate) { $oCertificate.PSObject.Properties.Remove("RawCertificate") }
+        }
+    }
+    return $aCertificates
 }

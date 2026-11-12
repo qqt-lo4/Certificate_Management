@@ -24,7 +24,9 @@
 - **Certificate Viewer**: Inspect a certificate from a file (PEM, DER, P7B, PFX), an HTTPS URL, a host or a SQL Server instance, with chain check, then create a new certificate from it
 - **RDS Certificate Deployment**: Push a PFX to a Remote Desktop Services server (Connection Broker roles or standalone RDP listener)
 - **SQL Server Certificate Renewal**: Renew the TLS certificate of a SQL Server instance, prepared without interruption, restart now or later
-- **Configurable**: CA and template name filters saved in a JSON config file
+- **Expiring Certificates**: Browse certificates approaching expiration, start a prefilled PKI request, or export the list to an Excel-friendly CSV
+- **NetScaler Certificate Checks**: Discover SSL virtual servers through the Nitro API and inspect certificates presented by candidate endpoints
+- **Configurable**: CA/template selection filters plus independent report template include/exclude filters and expiry window
 
 ## Requirements
 
@@ -48,7 +50,12 @@ The main menu offers:
 4. **View a certificate** - Display the details of a certificate
 5. **Export / Convert certificate** - Convert a PFX to other formats
 6. **Change the certificate of an application server** - **RDS server** or **SQL Server**
-7. **Settings** - Configure CA and template name filters
+7. **Certificates expiring soon** - Select an expiring certificate to start a prefilled PKI request, or export the list
+8. **Settings** - Configure selection and report filters
+
+NetScaler checks are available under **Change the certificate of an application server**. They require the ADC HTTPS management URL and a read-only Nitro API credential; the script discovers candidate SSL vServers, SNI bindings and explicit Content Switching host rules.
+
+The expiry report uses `ReportTemplateFilter`, `ReportTemplateExcludeFilter` and `ReportDaysAhead` in `input/config.json`. Empty inclusion filter means all templates; excluded templates are removed from both history-window calculation and results. The CSV uses semicolon delimiters for Excel in French regional settings.
 
 ## Certificate Viewer
 

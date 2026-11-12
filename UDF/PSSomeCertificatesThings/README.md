@@ -24,7 +24,7 @@ A PowerShell module for certificate management utilities: PKI and CA operations,
 | `Merge-OpenSSLPFX` | Merges a private key, certificate, and chain into a PFX file using OpenSSL |
 | `Get-CertificateTemplate` | Extracts certificate template information from an X509Certificate2 object |
 
-### PKI (7 functions)
+### PKI (8 functions)
 
 | Function | Description |
 |----------|-------------|
@@ -32,6 +32,7 @@ A PowerShell module for certificate management utilities: PKI and CA operations,
 | `Get-CertificateTemplates` | Retrieves all certificate templates from Active Directory |
 | `Get-CA` | Retrieves Certificate Authorities from the AIA container in Active Directory |
 | `Get-CAEnrollmentServices` | Retrieves CA Enrollment Services from Active Directory |
+| `Get-ExpiringCAIssuedCertificates` | Retrieves certificates expiring within a window, deduplicates renewals by CN/SAN, and can return the full certificate object |
 | `Get-PublishedCertificateTemplates` | Retrieves certificate templates published on a specific CA |
 | `Get-ADCA` | Retrieves comprehensive CA information including enrollment services and templates |
 

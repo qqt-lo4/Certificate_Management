@@ -3,7 +3,7 @@
     [string]$WorkingDir
 )
 
-$iModulesCount = 10
+$iModulesCount = 11
 $i = 0
 
 #region Include
@@ -32,6 +32,8 @@ Write-Progress -Activity "Loading script modules" -Status "PSSomeMSSqlThings" -P
 Import-Module $PSScriptRoot\UDF\PSSomeMSSqlThings -Force
 Write-Progress -Activity "Loading script modules" -Status "PSSomeNetworkThings" -PercentComplete (($($i++; $i) / $iModulesCount) * 100)
 Import-Module $PSScriptRoot\UDF\PSSomeNetworkThings -Force
+Write-Progress -Activity "Loading script modules" -Status "PSSomeNetScalerThings" -PercentComplete (($($i++; $i) / $iModulesCount) * 100)
+Import-Module $PSScriptRoot\UDF\PSSomeNetScalerThings -Force
 Write-Progress -Activity "Loading script modules" -Status "PSSomeRDSThings" -PercentComplete (($($i++; $i) / $iModulesCount) * 100)
 Import-Module $PSScriptRoot\UDF\PSSomeRDSThings -Force
 Write-Progress -Activity "Loading script modules" -Status "Loading end" -PercentComplete 100 -Completed
@@ -1191,23 +1193,275 @@ function Get-ThisScriptConfigPath {
 function Get-ThisScriptConfig {
     $sPath = Get-ThisScriptConfigPath
     if (Test-Path $sPath -PathType Leaf) {
-        return Get-Content -Path $sPath | ConvertFrom-Json
+        $oConfig = Get-Content -Path $sPath | ConvertFrom-Json
+    } else {
+        $oConfig = [PSCustomObject]@{}
     }
-    return [PSCustomObject]@{ CAFilter = ""; TemplateFilter = "" }
+    $hDefaults = @{
+        CAFilter = ""
+        TemplateFilter = ""
+        ReportTemplateFilter = ""
+        ReportTemplateExcludeFilter = ""
+        ReportDaysAhead = 30
+    }
+    foreach ($sProperty in $hDefaults.Keys) {
+        if (-not $oConfig.PSObject.Properties[$sProperty]) {
+            $oConfig | Add-Member -NotePropertyName $sProperty -NotePropertyValue $hDefaults[$sProperty]
+        }
+    }
+    return $oConfig
 }
 
 function Edit-ScriptConfig {
     $hProperties = [ordered]@{
         "CAFilter" = @{ Text = $ScriptConfig.CAFilter }
         "TemplateFilter" = @{ Text = $ScriptConfig.TemplateFilter }
+        "ReportTemplateFilter" = @{ Text = $ScriptConfig.ReportTemplateFilter }
+        "ReportTemplateExcludeFilter" = @{ Text = $ScriptConfig.ReportTemplateExcludeFilter }
+        "ReportDaysAhead" = @{ Text = [string]$ScriptConfig.ReportDaysAhead }
     }
     $oResult = Read-CLIDialogHashtable -Properties $hProperties -Header "Script configuration" -AllowCancel
     if ($null -ne $oResult) {
+        $iReportDaysAhead = 0
+        if (-not [int]::TryParse([string]$oResult.ReportDaysAhead, [ref]$iReportDaysAhead) -or $iReportDaysAhead -lt 1) {
+            Write-Host "ReportDaysAhead must be a positive number." -ForegroundColor Red
+            return
+        }
+        foreach ($sFilter in @($oResult.ReportTemplateFilter, $oResult.ReportTemplateExcludeFilter) | Where-Object { $_ }) {
+            try { $null = [regex]::new([string]$sFilter) } catch {
+                Write-Host "Invalid report template regular expression: $sFilter" -ForegroundColor Red
+                return
+            }
+        }
         $ScriptConfig.CAFilter = $oResult.CAFilter
         $ScriptConfig.TemplateFilter = $oResult.TemplateFilter
+        $ScriptConfig.ReportTemplateFilter = $oResult.ReportTemplateFilter
+        $ScriptConfig.ReportTemplateExcludeFilter = $oResult.ReportTemplateExcludeFilter
+        $ScriptConfig.ReportDaysAhead = $iReportDaysAhead
         $ScriptConfig | ConvertTo-Json -Depth 10 | Out-File (Get-ThisScriptConfigPath) -Encoding utf8
         Write-Host "Configuration saved." -ForegroundColor Green
         Write-Host ""
+    }
+}
+
+function Show-NetScalerCertificateCheck_CLI {
+    $oInput = Read-CLIDialogValidatedValue -Header "NetScaler management URL (HTTPS)" `
+        -PropertyName "URL" -ValidationMethod { param($v) return ($v.Trim().Length -gt 0) } `
+        -ErrorMessage "URL cannot be empty" -AllowCancel
+    if ($null -eq $oInput -or ($oInput.PSTypeNames -and $oInput.PSTypeNames[0] -like "DialogResult.Action.*")) { return }
+    $sManagementInput = if ($oInput.PSTypeNames -and $oInput.PSTypeNames[0] -eq "DialogResult.Value") { [string]$oInput.Value } else { [string]$oInput }
+    $sManagementInput = $sManagementInput.Trim().TrimEnd('/')
+    if ($sManagementInput -notmatch '^https://') { $sManagementInput = "https://$sManagementInput" }
+
+    $oCredential = Read-CLIDialogCredential -Credential $Global:NetScalerCredential `
+        -Message "NetScaler Nitro API credentials" -AddCancel
+    if ($null -eq $oCredential) { return }
+    $Global:NetScalerCredential = $oCredential
+
+    $oNitroSession = $null
+    try {
+        $oNitroSession = Connect-NetScalerNitroSession -ManagementUri $sManagementInput -Credential $oCredential
+        $aEndpoints = @(Get-NetScalerSSLEndpoint -Session $oNitroSession)
+    } catch {
+        Write-Warning "Could not discover SSL virtual servers from NetScaler: $_"
+        return
+    } finally {
+        if ($oNitroSession) { Disconnect-NetScalerNitroSession -Session $oNitroSession }
+    }
+    if ($aEndpoints.Count -eq 0) {
+        Write-Host "No SSL/SSL_TCP virtual servers were discovered." -ForegroundColor Yellow
+        return
+    }
+
+    $hCertificatesByThumbprint = @{}
+    $aChecks = @()
+    foreach ($oEndpoint in $aEndpoints) {
+        $oCertificate = $null
+        $oCertificateInfo = $null
+        $sStatus = 'Unavailable'
+        try {
+            $oEndpointUri = New-Object System.UriBuilder('https', [string]$oEndpoint.HostName, [int]$oEndpoint.Port)
+            $oCertificate = Get-CertificateFromUrl -Url $oEndpointUri.Uri.AbsoluteUri -TimeoutSeconds 10
+            if ($oCertificate -isnot [System.Security.Cryptography.X509Certificates.X509Certificate2]) {
+                throw "TLS probe returned '$($oCertificate.GetType().FullName)' instead of X509Certificate2."
+            }
+
+            $sThumbprint = ([string]$oCertificate.Thumbprint).Trim().ToUpperInvariant()
+            if ($sThumbprint -and $hCertificatesByThumbprint.ContainsKey($sThumbprint)) {
+                $oCertificate.Dispose()
+                $oCertificateInfo = $hCertificatesByThumbprint[$sThumbprint]
+            } else {
+                $aSANEntries = @(Get-CertificateSAN -Certificate $oCertificate -AsList)
+                $sSAN = if ($aSANEntries.Count -gt 0) {
+                    (@($aSANEntries | ForEach-Object { "{0}: {1}" -f $_.Type, $_.Value }) -join '; ')
+                } else { '-' }
+                $oTemplate = Get-CertificateTemplate -Certificate $oCertificate
+                $oCertificateInfo = [PSCustomObject]@{
+                    Certificate = $oCertificate
+                    Subject = $oCertificate.Subject
+                    Issuer = $oCertificate.Issuer
+                    Thumbprint = $oCertificate.Thumbprint
+                    SerialNumber = $oCertificate.SerialNumber
+                    NotBefore = $oCertificate.NotBefore
+                    NotAfter = $oCertificate.NotAfter
+                    CertificateTemplate = if ($oTemplate.Name) { $oTemplate.Name } elseif ($oTemplate.OID) { $oTemplate.OID } else { '-' }
+                    SAN = $sSAN
+                }
+                if ($sThumbprint) { $hCertificatesByThumbprint[$sThumbprint] = $oCertificateInfo }
+            }
+            $sStatus = if ($oCertificateInfo.NotAfter -le (Get-Date)) { 'Expired' } else { 'Presented' }
+        } catch {
+            Write-Verbose "TLS probe failed for $($oEndpoint.HostName):$($oEndpoint.Port): $_"
+            if ($oCertificate -is [System.Security.Cryptography.X509Certificates.X509Certificate2] -and
+                -not ($hCertificatesByThumbprint.Values.Certificate -contains $oCertificate)) {
+                $oCertificate.Dispose()
+            }
+        }
+
+        $aChecks += [PSCustomObject]@{
+            HostName = $oEndpoint.HostName
+            Port = $oEndpoint.Port
+            VirtualServer = $oEndpoint.VirtualServer
+            Type = $oEndpoint.VirtualServerType
+            Source = $oEndpoint.DiscoverySource
+            Status = $sStatus
+            CertificateSubject = if ($oCertificateInfo) { $oCertificateInfo.Subject } else { '-' }
+            Issuer = if ($oCertificateInfo) { $oCertificateInfo.Issuer } else { '-' }
+            Thumbprint = if ($oCertificateInfo) { $oCertificateInfo.Thumbprint } else { '-' }
+            SerialNumber = if ($oCertificateInfo) { $oCertificateInfo.SerialNumber } else { '-' }
+            SAN = if ($oCertificateInfo) { $oCertificateInfo.SAN } else { '-' }
+            CertificateTemplate = if ($oCertificateInfo) { $oCertificateInfo.CertificateTemplate } else { '-' }
+            NotBefore = if ($oCertificateInfo) { $oCertificateInfo.NotBefore } else { $null }
+            NotAfter = if ($oCertificateInfo) { $oCertificateInfo.NotAfter } else { $null }
+        }
+    }
+
+    try {
+        while ($true) {
+            $oSelection = Select-CLIDialogObjectInArray -Objects $aChecks `
+                -SelectedColumns @('HostName', 'Port', 'VirtualServer', 'Type', 'Status', @{ n = 'SAN'; e = { $_.SAN }; AutoWidth = $true }, 'CertificateTemplate', 'NotAfter') `
+                -SelectHeaderMessage 'NetScaler HTTPS certificates discovered from the ADC' `
+                -OtherMenuItems @(
+                    New-CLIDialogButton -Text '&Generate CSV report' -Other -Object { 'ExportReport' }
+                    New-CLIDialogButton -Text '&Exit' -Exit
+                ) -ItemsPerPage 10 -Space:$false -AllowBack
+
+            if ($oSelection.PSTypeNames -and $oSelection.PSTypeNames[0] -eq 'DialogResult.Action.Other') {
+                if ($oSelection.Value -eq 'ExportReport') {
+                    $sOutputDir = Get-ScriptDir -OutputDir
+                    New-Item -Path $sOutputDir -ItemType Directory -Force | Out-Null
+                    $sReportPath = Join-Path $sOutputDir ("NetScalerCertificates_{0}.csv" -f (Get-Date -Format 'yyyyMMdd-HHmmss'))
+                    $aChecks | Select-Object HostName, Port, VirtualServer, Type, Source, Status, CertificateSubject, Issuer, Thumbprint, SerialNumber, SAN, CertificateTemplate, NotBefore, NotAfter |
+                        Export-Csv -Path $sReportPath -NoTypeInformation -Encoding UTF8 -Delimiter ';'
+                    Write-Host "Report saved to: $sReportPath" -ForegroundColor Cyan
+                }
+                continue
+            }
+            if ($oSelection.PSTypeNames -and $oSelection.PSTypeNames[0] -eq 'DialogResult.Value') {
+                if ($oSelection.Value.Thumbprint -eq '-') {
+                    Write-Warning "No certificate was obtained from $($oSelection.Value.HostName):$($oSelection.Value.Port)."
+                    continue
+                }
+                $oEndpointUri = New-Object System.UriBuilder('https', [string]$oSelection.Value.HostName, [int]$oSelection.Value.Port)
+                $oViewResult = Show-CertificateSource_CLI -Source $oEndpointUri.Uri.AbsoluteUri -OpenSSLPath $OpenSSLPath
+                if (Test-DialogAction $oViewResult -Action 'Exit') { return $oViewResult }
+                continue
+            }
+            return
+        }
+    } finally {
+        foreach ($oInfo in $hCertificatesByThumbprint.Values) {
+            if ($oInfo.Certificate -is [System.Security.Cryptography.X509Certificates.X509Certificate2]) { $oInfo.Certificate.Dispose() }
+        }
+    }
+}
+
+function Show-ExpiringCertificates_CLI {
+    $iDaysAhead = 30
+    if (-not [int]::TryParse([string]$ScriptConfig.ReportDaysAhead, [ref]$iDaysAhead) -or $iDaysAhead -lt 1) { $iDaysAhead = 30 }
+    $sTemplateFilter = [string]$ScriptConfig.ReportTemplateFilter
+    $sTemplateExcludeFilter = [string]$ScriptConfig.ReportTemplateExcludeFilter
+    foreach ($sFilter in @($sTemplateFilter, $sTemplateExcludeFilter) | Where-Object { $_ }) {
+        try { $null = [regex]::new($sFilter) } catch {
+            Write-Host "Invalid report template regular expression: $sFilter" -ForegroundColor Red
+            return
+        }
+    }
+
+    $oCredential = $Global:PKICredential
+    if ($null -eq $oCredential) {
+        $oCredential = Read-CLIDialogCredential -Message "Enter credentials to query the PKI" -AddCancel
+        if ($null -eq $oCredential) { return }
+        $Global:PKICredential = $oCredential
+    }
+
+    while ($true) {
+        try {
+            $aExpiringCertificates = @(Get-ExpiringCAIssuedCertificates -Credential $oCredential `
+                -DaysAhead $iDaysAhead -TemplateFilter $sTemplateFilter `
+                -ExcludedTemplateFilter $sTemplateExcludeFilter -IncludeCertificate)
+        } catch {
+            Write-Warning "Could not list expiring certificates: $_"
+            return
+        }
+        if ($aExpiringCertificates.Count -eq 0) {
+            Write-Host "No certificates expire within the next $iDaysAhead day(s) after filtering and renewal deduplication." -ForegroundColor Green
+            return
+        }
+
+        $aRows = @($aExpiringCertificates | ForEach-Object {
+            $aSANParts = @()
+            if ($_.SAN) {
+                foreach ($sType in $_.SAN.Keys) {
+                    $aValues = @($_.SAN[$sType] | Where-Object { $null -ne $_ -and [string]$_ -ne '' })
+                    if ($aValues.Count -gt 0) { $aSANParts += "${sType}: $($aValues -join ', ')" }
+                }
+            }
+            [PSCustomObject]@{
+                CAName = $_.CAName
+                CommonName = $_.CommonName
+                SAN = if ($aSANParts.Count) { $aSANParts -join '; ' } else { '-' }
+                CertificateTemplate = $_.CertificateTemplate
+                IssuedOn = $_.IssuedOn
+                NotAfter = $_.NotAfter
+                DaysRemaining = $_.DaysRemaining
+                RequesterName = $_.RequesterName
+                SerialNumber = $_.SerialNumber
+                Certificate = $_.Certificate
+            }
+        })
+
+        $oSelection = Select-CLIDialogObjectInArray -Objects $aRows `
+            -SelectedColumns @('CAName', 'CommonName', @{ n = 'SAN'; e = { $_.SAN }; AutoWidth = $true }, 'CertificateTemplate', 'IssuedOn', 'NotAfter', 'DaysRemaining') `
+            -SelectHeaderMessage 'Certificates expiring soon: select one to start a prefilled request' `
+            -OtherMenuItems @(
+                New-CLIDialogButton -Text '&Generate CSV report' -Other -Object { 'ExportReport' }
+                New-CLIDialogButton -Text '&Exit' -Exit
+            ) -ItemsPerPage 10 -Space:$false -AllowBack
+
+        if ($oSelection.PSTypeNames -and $oSelection.PSTypeNames[0] -eq 'DialogResult.Action.Other') {
+            if ($oSelection.Value -eq 'ExportReport') {
+                $sOutputDir = Get-ScriptDir -OutputDir
+                New-Item -Path $sOutputDir -ItemType Directory -Force | Out-Null
+                $sReportPath = Join-Path $sOutputDir ("ExpiringCertificates_{0}.csv" -f (Get-Date -Format 'yyyyMMdd-HHmmss'))
+                $aRows | Select-Object CAName, CommonName, SAN, CertificateTemplate, IssuedOn, NotAfter, DaysRemaining, RequesterName, SerialNumber |
+                    Export-Csv -Path $sReportPath -NoTypeInformation -Encoding UTF8 -Delimiter ';'
+                Write-Host "Report saved to: $sReportPath" -ForegroundColor Cyan
+            }
+            continue
+        }
+
+        if ($oSelection.PSTypeNames -and $oSelection.PSTypeNames[0] -eq 'DialogResult.Value') {
+            $oSelectedCertificate = $oSelection.Value.Certificate
+            if ($oSelectedCertificate -isnot [System.Security.Cryptography.X509Certificates.X509Certificate2]) {
+                Write-Warning 'The selected certificate could not be loaded from the CA database.'
+                continue
+            }
+            $hInitialValues = ConvertTo-CertFormValues -Certificate $oSelectedCertificate
+            New-PKISignedCertAndPFX_CLI -OpenSSLPath $OpenSSLPath -ItemsMode -InitialValues $hInitialValues | Out-Null
+            continue
+        }
+        return
     }
 }
 
@@ -2817,9 +3071,11 @@ $Menu = New-Menu -Text "What do you want to do?" -Content @(
     ) -OtherMenuItems $aOtherMenuItems -SeparatorColor Blue
     New-MenuItem -Text "&View a certificate" -Content { Show-Certificate_CLI -OpenSSLPath $OpenSSLPath }
     New-MenuItem -Text "E&xport / Convert certificate" -Content { Convert-Certificate_CLI -OpenSSLPath $OpenSSLPath | Out-Null }
+    New-MenuItem -Text "Certificates expiring soon" -Content { Show-ExpiringCertificates_CLI }
     New-Menu -Text "Change the certificate of an application se&rver" -Content @(
         New-MenuItem -Text "&RDS server" -Content { Set-RDSCertificate_CLI | Out-Null }
         New-MenuItem -Text "&SQL Server" -Content { Set-MSSqlCertificate_CLI }
+        New-MenuItem -Text "&NetScaler ADC" -Content { Show-NetScalerCertificateCheck_CLI }
     ) -OtherMenuItems $aOtherMenuItems -SeparatorColor Blue
     New-MenuItem -Text "&Settings" -Content { Edit-ScriptConfig }
 ) -OtherMenuItems $mExit -SeparatorColor Blue
