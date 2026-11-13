@@ -1537,9 +1537,11 @@ function Show-ExpiringCertificateDetails_CLI {
         Write-Warning 'The certificate could not be loaded from the CA database.'
     }
     Write-Host '------------------------ PKI request / report ------------------------' -ForegroundColor Blue
-    $CertificateRecord | Select-Object CAName, RequestID, RequesterName, CertificateTemplate, SubmittedWhen, ResolvedWhen,
-        IssuedOn, CommonName, SAN, NotAfter, DaysRemaining, SerialNumber, CertificateHash, RevocationStatus, RevocationDetails |
-        Format-List | Out-String -Width ([Math]::Max(40, (Get-Host).UI.RawUI.WindowSize.Width)) | Write-Host
+    foreach ($sProperty in @('CAName', 'RequestID', 'RequesterName', 'CertificateTemplate', 'SubmittedWhen', 'ResolvedWhen',
+        'IssuedOn', 'CommonName', 'SAN', 'NotAfter', 'DaysRemaining', 'SerialNumber', 'CertificateHash', 'RevocationStatus', 'RevocationDetails')) {
+        Write-Field -Name $sProperty -Value $CertificateRecord.$sProperty
+    }
+    Write-Host ''
 
     $aActions = @()
     if ($bHasCertificate) {
@@ -2761,6 +2763,24 @@ function Get-SortedCertificateChain {
     return $aOrdered
 }
 
+function Write-Field {
+    Param(
+        [string]$Name,
+        [object]$Value,
+        [object]$Color   # console default when not set
+    )
+    $aValues = @($Value | Where-Object { $null -ne $_ -and "$_" -ne "" })
+    if ($aValues.Count -eq 0) { return }
+    # Label in green like Format-List in PowerShell 7; continuation lines are aligned under
+    # the value, without the ":"
+    $sPrefix = "{0,-20}: " -f $Name
+    foreach ($v in $aValues) {
+        Write-Host $sPrefix -NoNewline -ForegroundColor Green
+        if ($null -ne $Color) { Write-Host $v -ForegroundColor $Color } else { Write-Host $v }
+        $sPrefix = " " * 22
+    }
+}
+
 function Write-CertificateToHost {
     # Displays the main information of a certificate, then validates its chain on this computer
     # (ExtraCertificates are used as intermediates, e.g. the other certificates of a P7B).
@@ -2771,24 +2791,6 @@ function Write-CertificateToHost {
         [switch]$SkipChainCheck
     )
     $oCert = $Certificate
-
-    function Write-Field {
-        Param(
-            [string]$Name,
-            [object]$Value,
-            [object]$Color   # console default when not set
-        )
-        $aValues = @($Value | Where-Object { $null -ne $_ -and "$_" -ne "" })
-        if ($aValues.Count -eq 0) { return }
-        # Label in green like Format-List in PowerShell 7; continuation lines are aligned under
-        # the value, without the ":"
-        $sPrefix = "{0,-20}: " -f $Name
-        foreach ($v in $aValues) {
-            Write-Host $sPrefix -NoNewline -ForegroundColor Green
-            if ($null -ne $Color) { Write-Host $v -ForegroundColor $Color } else { Write-Host $v }
-            $sPrefix = " " * 22
-        }
-    }
 
     Write-Host ""
     Write-Host "--------------------------- Certificate ---------------------------" -ForegroundColor Blue
