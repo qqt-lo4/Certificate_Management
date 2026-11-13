@@ -9,6 +9,8 @@
         navigation (arrows, Home, End, Backspace, Delete), validation (regex or scriptblock),
         password masking, secure string support, custom value conversion, and visual feedback
         for invalid input. The control displays a header label and an editable text field.
+        Multi-line controls display a vertical scrollbar when content exceeds VisibleLines.
+        The scrollbar follows keyboard navigation without changing the control height.
 
     .PARAMETER Header
         The label text displayed before the input field. This parameter is mandatory and can
@@ -114,7 +116,7 @@
         - Methods: IsValidText(), Draw(), DrawFocused(), PressLeft(), PressRight(), PressBackspace(),
                    PressDelete(), PressHome(), PressEnd(), PressUp(), PressDown(), PressKey(),
                    SetCursorPosition(), GetTextHeight(), GetTextWidth(), Reset(), GetValue(),
-                   IsDynamicObject()
+                   IsDynamicObject(), GetVerticalScrollBar()
 
     .EXAMPLE
         $nameBox = New-CLIDialogTextBox -Header "Name" -Text "John Doe"
@@ -163,7 +165,7 @@
         Module: CLIDialog
         Author: Loïc Ade
         Created: 2025-10-20
-        Version: 2.0.0
+        Version: 2.1.0
         Dependencies: None
 
         This function is part of the CLI Dialog framework. Text boxes are the primary control
@@ -227,6 +229,11 @@
         - IsDynamicObject(): Returns $true (textbox is interactive)
 
         CHANGELOG:
+
+        Version 2.1.0 - 2026-11-13
+            - Added proportional vertical scrollbars to multi-line controls
+            - Reserved a stable scrollbar column in focused and unfocused rendering
+            - Preserved VisibleLines height when the scrollbar appears or disappears
 
         Version 2.0.0 - 2026-04-05 - Loïc Ade
             Overflow:
@@ -420,6 +427,20 @@
         }
     }
 
+    $hResult | Add-Member -MemberType ScriptMethod -Name "GetVerticalScrollBar" -Value {
+        $iVisibleLines = $this.GetCurrentVisibleLineCount()
+        $iLineCount = $this.GetLines().Count
+        if (-not $this.MultiLine -or $iLineCount -le $iVisibleLines) {
+            return " " * $iVisibleLines
+        }
+        $iThumbSize = [Math]::Max(1, [int][Math]::Floor($iVisibleLines * $iVisibleLines / $iLineCount))
+        $iMaxTopLine = $iLineCount - $iVisibleLines
+        $iTopLine = [Math]::Max(0, [Math]::Min($this.ViewportTopLine, $iMaxTopLine))
+        $iThumbTop = [int][Math]::Round(($iVisibleLines - $iThumbSize) * $iTopLine / $iMaxTopLine)
+        return (([string][char]0x2591) * $iThumbTop) + (([string][char]0x2588) * $iThumbSize) +
+            (([string][char]0x2591) * ($iVisibleLines - $iThumbTop - $iThumbSize))
+    }
+
     $hResult | Add-Member -MemberType ScriptMethod -Name "IsValidText" -Value {
         if ($this.Regex -or $this.ValidationScript) {
             if ($this.LastTestedText -eq $this.Text) {
@@ -491,7 +512,7 @@
     }
 
     $hResult | Add-Member -MemberType ScriptMethod -Name "DrawLine" -Value {
-        Param([string]$LineText, [int]$AvailableWidth, [string]$HeaderText, [System.ConsoleColor]$HeaderFG, [System.ConsoleColor]$HeaderBG)
+        Param([string]$LineText, [int]$AvailableWidth, [string]$HeaderText, [System.ConsoleColor]$HeaderFG, [System.ConsoleColor]$HeaderBG, [switch]$NoNewline)
         if ($HeaderText) {
             Write-Host $HeaderText -ForegroundColor $HeaderFG -BackgroundColor $HeaderBG -NoNewline
         }
@@ -500,11 +521,12 @@
             $sVisible = $sPrintedLine.Substring(0, $AvailableWidth - 1)
             Write-Host $sVisible -ForegroundColor $this.TextForegroundColor -BackgroundColor $this.TextBackgroundColor -NoNewline
             Write-Host $this.OverflowIndicatorRight -ForegroundColor $this.OverflowIndicatorColor -BackgroundColor $this.TextBackgroundColor -NoNewline
-            Write-Host ""
+            Write-Host "" -NoNewline:$NoNewline
         } else {
             Write-Host $sPrintedLine -ForegroundColor $this.TextForegroundColor -BackgroundColor $this.TextBackgroundColor -NoNewline
             $iRemaining = [Math]::Max(1, $AvailableWidth - $sPrintedLine.Length) - 1
-            Write-Host (" " * $iRemaining)
+            if ($NoNewline) { $iRemaining = [Math]::Max(0, $AvailableWidth - $sPrintedLine.Length) }
+            Write-Host (" " * $iRemaining) -NoNewline:$NoNewline
         }
     }
 
@@ -518,15 +540,22 @@
         }
         $iAvailableWidth = $host.ui.RawUI.WindowSize.Width - $sHeader.Length
         if ($this.MultiLine) {
+            $this.EnsureCursorVisible()
             $aLines = $this.GetLines()
             $sLinePadding = " " * $sHeader.Length
             $iVisibleLines = $this.GetCurrentVisibleLineCount()
+            $bDrawScrollBar = $iAvailableWidth -ge 5
+            $sScrollBar = $this.GetVerticalScrollBar()
+            if ($bDrawScrollBar) { $iAvailableWidth -= 2 }
             for ($i = 0; $i -lt $iVisibleLines; $i++) {
                 $iLineIndex = $this.ViewportTopLine + $i
                 $sLineText = if ($iLineIndex -lt $aLines.Count) { [string]$aLines[$iLineIndex] } else { "" }
                 $sLineHeader = if ($i -eq 0) { $sHeader } else { $sLinePadding }
                 $oLineFG = if ($i -eq 0) { $oHeaderColor } else { $this.HeaderBackgroundColor }
-                $this.DrawLine($sLineText, $iAvailableWidth, $sLineHeader, $oLineFG, $this.HeaderBackgroundColor)
+                $this.DrawLine($sLineText, $iAvailableWidth, $sLineHeader, $oLineFG, $this.HeaderBackgroundColor, $bDrawScrollBar)
+                if ($bDrawScrollBar) {
+                    Write-Host $sScrollBar[$i] -ForegroundColor $this.OverflowIndicatorColor -BackgroundColor $this.TextBackgroundColor
+                }
             }
         } else {
             $sPrintedText = if ($this.PasswordChar) { $this.PasswordChar.ToString() * $this.Text.Length } else { $this.Text }
@@ -536,7 +565,7 @@
 
     # Renders a single line of text with cursor and selection support
     $hResult | Add-Member -MemberType ScriptMethod -Name "DrawFocusedLineContent" -Value {
-        Param([string]$sFullText, [int]$iAvailableWidth, [int]$iCursorPos, [bool]$bShowCursor, [int]$iSelStart, [int]$iSelEnd, [bool]$bHasSelection)
+        Param([string]$sFullText, [int]$iAvailableWidth, [int]$iCursorPos, [bool]$bShowCursor, [int]$iSelStart, [int]$iSelEnd, [bool]$bHasSelection, [switch]$NoNewline)
         $bCursorAtEnd = $bShowCursor -and ($iCursorPos -eq $sFullText.Length)
         $iCursorExtra = if ($bCursorAtEnd) { 1 } else { 0 }
 
@@ -576,7 +605,7 @@
                     }
                 } else {
                     # Selection doesn't intersect this line
-                    $this.DrawFocusedLineContent($sFullText, $iAvailableWidth, $iCursorPos, $bShowCursor, 0, 0, $false)
+                    $this.DrawFocusedLineContent($sFullText, $iAvailableWidth, $iCursorPos, $bShowCursor, 0, 0, $false, $NoNewline.IsPresent)
                     return
                 }
             } else {
@@ -603,8 +632,9 @@
             } else {
                 $iRemaining = [Math]::Max(0, $iAvailableWidth - $sFullText.Length) - 1
             }
+            if ($NoNewline) { $iRemaining++ }
             if ($iRemaining -gt 0) { Write-Host (" " * $iRemaining) -NoNewline }
-            Write-Host ""
+            Write-Host "" -NoNewline:$NoNewline
         } else {
             # === Text overflows: sliding window ===
             $iLocalCursor = if ($bShowCursor) { $iCursorPos } else { 0 }
@@ -665,7 +695,7 @@
             if ($bShowRightArrow) {
                 Write-Host $this.OverflowIndicatorRight -NoNewline -ForegroundColor $this.OverflowIndicatorColor -BackgroundColor $this.FocusedTextBackgroundColor
             }
-            Write-Host ""
+            Write-Host "" -NoNewline:$NoNewline
         }
     }
 
@@ -689,10 +719,14 @@
         $iSelEnd = $this.GetSelectionEnd()
 
         if ($this.MultiLine) {
+            $this.EnsureCursorVisible()
             $aLines = $this.GetLines()
             $sLinePadding = " " * $sPropertyToScreen.Length
             $oCursor = $this.GetCursorLineColumn()
             $iVisibleLines = $this.GetCurrentVisibleLineCount()
+            $bDrawScrollBar = $iAvailableWidth -ge 5
+            $sScrollBar = $this.GetVerticalScrollBar()
+            if ($bDrawScrollBar) { $iAvailableWidth -= 2 }
             $iFlatPos = 0
             # Calculate flat position of ViewportTopLine
             for ($j = 0; $j -lt $this.ViewportTopLine; $j++) {
@@ -714,10 +748,14 @@
                     $iLineSelStart = [Math]::Max(0, $iSelStart - $iFlatPos)
                     $iLineSelEnd = [Math]::Min($sLine.Length, $iSelEnd - $iFlatPos)
                     $bLineSel = $bHasSelection -and ($iLineSelEnd -gt $iLineSelStart)
-                    $this.DrawFocusedLineContent($sLine, $iAvailableWidth, $iLineCursorPos, $bCursorOnThisLine, $iLineSelStart, $iLineSelEnd, $bLineSel)
+                    $this.DrawFocusedLineContent($sLine, $iAvailableWidth, $iLineCursorPos, $bCursorOnThisLine, $iLineSelStart, $iLineSelEnd, $bLineSel, $bDrawScrollBar)
                 } else {
                     # Empty padding line
-                    Write-Host (" " * [Math]::Max(0, $iAvailableWidth - 1))
+                    $iPaddingWidth = if ($bDrawScrollBar) { $iAvailableWidth } else { $iAvailableWidth - 1 }
+                    Write-Host (" " * [Math]::Max(0, $iPaddingWidth)) -NoNewline:$bDrawScrollBar
+                }
+                if ($bDrawScrollBar) {
+                    Write-Host $sScrollBar[$i] -ForegroundColor $this.OverflowIndicatorColor -BackgroundColor $this.FocusedTextBackgroundColor
                 }
                 if ($iLineIndex -lt $aLines.Count) {
                     $iFlatPos += $aLines[$iLineIndex].Length + 1

@@ -166,6 +166,8 @@ Changed:
     column widths are recalculated, and rightmost columns are hidden if their headers cannot fit.
     AutoWidth no longer receives a negative width, and dates and numbers are truncated correctly.
     These display changes do not modify source objects or exported report data.
+- Added proportional vertical scrollbars to multi-line text boxes when content exceeds the
+    visible line count, with a stable control height and support for existing keyboard navigation.
 - Fixed the missing RevocationDetails property that prevented report generation.
 - Fixed Exit in the expiring-certificate report: the action object is returned to the main menu,
     which remains responsible for exiting the application.
