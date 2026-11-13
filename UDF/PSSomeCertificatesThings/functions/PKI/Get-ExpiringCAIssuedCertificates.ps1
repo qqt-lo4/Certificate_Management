@@ -30,9 +30,16 @@ function Get-ExpiringCAIssuedCertificates {
     .PARAMETER IncludeCertificate
         Include the complete certificate as a System.Security.Cryptography.X509Certificates.X509Certificate2 object.
 
+    .PARAMETER CheckRevocation
+        Check revocation online and exclude a certificate only when it is confirmed revoked.
+
+    .PARAMETER RevocationCheckTimeoutSeconds
+        URL retrieval timeout configured for the revocation check. Default: 5 seconds.
+
     .OUTPUTS
         [PSCustomObject[]] Certificate records with CAName, CommonName, SAN, CertificateTemplate,
-        IssuedOn, NotAfter, DaysRemaining, RequesterName, SerialNumber, and CertificateHash.
+        IssuedOn, NotAfter, DaysRemaining, RevocationStatus, RequesterName, SerialNumber, CertificateHash,
+        RequestID, SubmittedWhen, and ResolvedWhen.
 
     .EXAMPLE
         $credential = Get-Credential
@@ -55,7 +62,12 @@ function Get-ExpiringCAIssuedCertificates {
         [ValidateRange(1, [int]::MaxValue)]
         [int]$MaxResultsPerCA = [int]::MaxValue,
 
-        [switch]$IncludeCertificate
+        [switch]$IncludeCertificate,
+
+        [switch]$CheckRevocation,
+
+        [ValidateRange(1, 120)]
+        [int]$RevocationCheckTimeoutSeconds = 5
     )
 
     foreach ($sFilter in @($TemplateFilter, $ExcludedTemplateFilter, $CANameFilter) | Where-Object { $_ }) {
@@ -109,7 +121,7 @@ function Get-ExpiringCAIssuedCertificates {
                 Credential = $Credential
                 MaxResults = $MaxResultsPerCA
                 IncludeSAN = $true
-                IncludeRawCertificate = $IncludeCertificate.IsPresent
+                IncludeRawCertificate = ($IncludeCertificate.IsPresent -or $CheckRevocation.IsPresent)
             }
             if ($null -ne $dtIssuedOnFrom) { $hIssuedCertificateParams.IssuedOnFrom = $dtIssuedOnFrom }
             $aIssuedCertificates = @(Get-CAIssuedCertificates @hIssuedCertificateParams)
@@ -162,7 +174,7 @@ function Get-ExpiringCAIssuedCertificates {
             }
 
             $oFullCertificate = $null
-            if ($IncludeCertificate) {
+            if ($IncludeCertificate -or $CheckRevocation) {
                 try {
                     $oRawCertificate = $oCertificate.RawCertificate
                     if ($oRawCertificate -is [byte[]] -and $oRawCertificate.Length -gt 0 -and $oRawCertificate[0] -eq 0x30) {
@@ -189,6 +201,9 @@ function Get-ExpiringCAIssuedCertificates {
 
             $oCandidate = [PSCustomObject]@{
                 CAName = $oCA.Name
+                RequestID = $oCertificate.RequestID
+                SubmittedWhen = $oCertificate.SubmittedWhen
+                ResolvedWhen = $oCertificate.ResolvedWhen
                 CommonName = $oCertificate.CommonName
                 SAN = $oCertificate.SAN
                 SANIdentity = $hSANIdentity
@@ -199,8 +214,10 @@ function Get-ExpiringCAIssuedCertificates {
                 RequesterName = $oCertificate.RequesterName
                 SerialNumber = $oCertificate.SerialNumber
                 CertificateHash = $oCertificate.CertificateHash
+                RevocationStatus = 'NotChecked'
+                RevocationDetails = $null
             }
-            if ($IncludeCertificate) {
+            if ($IncludeCertificate -or $CheckRevocation) {
                 $oCandidate | Add-Member -MemberType NoteProperty -Name Certificate -Value $oFullCertificate
             }
 
@@ -279,9 +296,30 @@ function Get-ExpiringCAIssuedCertificates {
                 }
                 continue
             }
+
+            if ($CheckRevocation) {
+                if ($oNewestCertificate.Certificate -is [System.Security.Cryptography.X509Certificates.X509Certificate2]) {
+                    $oRevocation = Test-CertificateRevocation -Certificate $oNewestCertificate.Certificate `
+                        -TimeoutSeconds $RevocationCheckTimeoutSeconds
+                    $oNewestCertificate.RevocationStatus = $oRevocation.Status
+                    $oNewestCertificate.RevocationDetails = $oRevocation.Details
+                    if ($oRevocation.Status -eq 'Revoked') {
+                        $oNewestCertificate.Certificate.Dispose()
+                        continue
+                    }
+                } else {
+                    $oNewestCertificate.RevocationStatus = 'Unknown'
+                    $oNewestCertificate.RevocationDetails = 'Certificate object could not be loaded.'
+                }
+            }
+
             $oNewestCertificate.DaysRemaining = [int][Math]::Ceiling(($oNewestCertificate.NotAfter - $dtNow).TotalDays)
             $oNewestCertificate.SANIdentity = $null
             if ($oNewestCertificate.IssuedOn -eq [datetime]::MinValue) { $oNewestCertificate.IssuedOn = $null }
+            if (-not $IncludeCertificate -and $oNewestCertificate.Certificate -is [System.Security.Cryptography.X509Certificates.X509Certificate2]) {
+                $oNewestCertificate.Certificate.Dispose()
+                $oNewestCertificate.Certificate = $null
+            }
             $aExpiringCertificates += $oNewestCertificate
         }
     }

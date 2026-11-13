@@ -9,6 +9,10 @@
         automatic width calculation, and content truncation. The function supports both pipeline
         input and custom property selection with hashtable definitions.
 
+        When the table does not fit, dates without an explicit format use the current culture's
+        short date format before column widths are recalculated. Source objects are not changed.
+        Rightmost columns are omitted when their headers cannot fit in the available width.
+
         Key features:
         - Custom column width calculation with automatic width for one column
         - Header color customization with optional underline
@@ -161,6 +165,39 @@
             $null
         }
         $aColumnFormat = Get-ColumnFormat -SelectedObjects $aSelectedObjects -AddColumnnFormat $aColumnFormatAdditionalProperties
+        $iPreferredTableWidth = ($aColumnFormat | ForEach-Object {
+            [Math]::Max($_.Name.Length, $_.ContentMaxWidth)
+        } | Measure-Object -Sum).Sum + ($aColumnFormat.Count - 1)
+        if ($iPreferredTableWidth -gt $ContentMaxWidth) {
+            $aDateColumnNames = @($aColumnFormat | Where-Object {
+                -not $_.Format -and @($_.Values | Where-Object { $_ -is [datetime] }).Count -gt 0
+            } | ForEach-Object { $_.Name })
+            if ($aDateColumnNames.Count -gt 0) {
+                $aSelectedObjects = @($aSelectedObjects | ForEach-Object {
+                    $oDisplayObject = $_ | Select-Object -Property *
+                    foreach ($sDateColumnName in $aDateColumnNames) {
+                        if ($oDisplayObject.$sDateColumnName -is [datetime]) {
+                            $oDisplayObject.$sDateColumnName = $oDisplayObject.$sDateColumnName.ToString('d', [System.Globalization.CultureInfo]::CurrentCulture)
+                        }
+                    }
+                    $oDisplayObject
+                })
+                $aColumnFormat = Get-ColumnFormat -SelectedObjects $aSelectedObjects -AddColumnnFormat $aColumnFormatAdditionalProperties
+            }
+        }
+        $aColumnFormat = @($aColumnFormat)
+        $iMinimumTableWidth = ($aColumnFormat | ForEach-Object { $_.Name.Length } | Measure-Object -Sum).Sum + ($aColumnFormat.Count - 1)
+        $bColumnsDropped = $false
+        while ($aColumnFormat.Count -gt 0 -and $iMinimumTableWidth -gt $ContentMaxWidth) {
+            $iMinimumTableWidth -= $aColumnFormat[-1].Name.Length + 1
+            $aColumnFormat = @($aColumnFormat | Select-Object -First ($aColumnFormat.Count - 1))
+            $bColumnsDropped = $true
+        }
+        if ($aColumnFormat.Count -eq 0) { return @() }
+        if ($bColumnsDropped) {
+            $aSelectedObjects = @($aSelectedObjects | Select-Object -Property $aColumnFormat.Name)
+        }
+
         $iMaxTableWidth = 0
         $iColumnAutoWidth = 0
         $oAutoWidthColumn = $null
@@ -168,7 +205,7 @@
         foreach ($column in $aColumnFormat) {
             $hColumns[$column.Name] = $column
             if ($column.AutoWidth) {
-                $iColumnAutoWidth = $column.ContentMaxWidth
+                $iColumnAutoWidth = [Math]::Max($column.Name.Length, $column.ContentMaxWidth)
                 $oAutoWidthColumn = $column
             } else {
                 $column.Width = if ($column.Name.Length -gt $column.ContentMaxWidth) { $column.Name.Length } else { $column.ContentMaxWidth }
@@ -182,41 +219,49 @@
                 $oAutoWidthColumn.Width = $iColumnAutoWidth
             }
         } else {
-            $oAutoWidthColumn.Width = $ContentMaxWidth - $iMaxTableWidth
+            $iMinimumAutoWidth = if ($oAutoWidthColumn) { $oAutoWidthColumn.Name.Length } else { 0 }
+            $iWidthToRemove = $iMaxTableWidth + $iMinimumAutoWidth - $ContentMaxWidth
+            while ($iWidthToRemove -gt 0) {
+                $oResizableColumn = $aColumnFormat | Where-Object {
+                    -not $_.AutoWidth -and $_.Width -gt $_.Name.Length
+                } | Sort-Object Width -Descending | Select-Object -First 1
+                if (-not $oResizableColumn) {
+                    throw "The console is too narrow for the table headers. Widen it to at least $($iMaxTableWidth + $iMinimumAutoWidth) characters."
+                }
+                $oResizableColumn.Width--
+                $iMaxTableWidth--
+                $iWidthToRemove--
+            }
+            if ($oAutoWidthColumn) {
+                $oAutoWidthColumn.Width = $ContentMaxWidth - $iMaxTableWidth
+            }
         }
     
         $aResultLine = @()
         
         if (-not $HideHeader) {
             $sHeaderLine = "$([char]27)[" + (Convert-ConsoleColorToInt $HeaderColor) + "m"
-            if ($aColumnFormat -is [array]) {
-                for($i = 0; $i -lt $aColumnFormat.Name.Count; $i++) {
-                    $sPropertyName = $aColumnFormat.Name[$i]
-                    $column = $hColumns[$sPropertyName]
-                    $iAlign = if ($column.Alignment -eq "left") { -1 } else { 1 }
-                    $sHeaderLine += ("{0,$($column.width * $iAlign)}" -f $column.Name) 
-                    if ($i -lt ($aColumnFormat.Name.Count - 1)) {
-                        $sHeaderLine += " "
-                    }
-                }    
-            } else {
-                $column = $aColumnFormat
+            for ($i = 0; $i -lt $aColumnFormat.Count; $i++) {
+                $column = $aColumnFormat[$i]
                 $iAlign = if ($column.Alignment -eq "left") { -1 } else { 1 }
-                $sHeaderLine += ("{0,$($column.width * $iAlign)}" -f $column.Name) + " "
+                $sHeaderLine += ("{0,$($column.width * $iAlign)}" -f $column.Name)
+                if ($i -lt ($aColumnFormat.Count - 1)) {
+                    $sHeaderLine += " "
+                }
             }
             $sHeaderLine += "$([char]27)[0m"
             $aResultLine += $sHeaderLine
             if ($HeaderUnderline) {
                 $sUnderLine = "$([char]27)[" + (Convert-ConsoleColorToInt $HeaderColor) + "m"
-                for($i = 0; $i -lt $aColumnFormat.Name.Count; $i++) {
-                    $sPropertyName = $aColumnFormat.Name[$i]
-                    $column = $hColumns[$sPropertyName]
+                for ($i = 0; $i -lt $aColumnFormat.Count; $i++) {
+                    $column = $aColumnFormat[$i]
+                    $sPropertyName = $column.Name
                     if ($column.Alignment -eq "right") {
                         $sUnderLine += (" " * ($column.Width - $sPropertyName.Length)) + ("-" * $sPropertyName.Length)
                     } else {
                         $sUnderLine += ("-" * $sPropertyName.Length) + (" " * ($column.Width - $sPropertyName.Length))
                     }
-                    if ($i -lt ($aColumnFormat.Name.Count - 1)) {
+                    if ($i -lt ($aColumnFormat.Count - 1)) {
                         $sUnderLine += " "
                     }
                 }
@@ -231,7 +276,7 @@
                     $sPropertyName = $Object.PSObject.Properties.Name[$i]
                     $column = $hColumns[$sPropertyName]
                     $iAlign = if ($column.Alignment -eq "left") { -1 } else { 1 }
-                    $sValue = $Object.$sPropertyName
+                    $sValue = if ($null -eq $Object.$sPropertyName) { '' } else { $Object.$sPropertyName.ToString() }
                     if ($sValue.Length -gt $column.width) {
                         $sValue = $sValue.SubString(0, $column.width - 1) + "…"
                     } 
@@ -244,7 +289,7 @@
                 $sPropertyName = $Object.PSObject.Properties.Name
                 $column = $hColumns[$sPropertyName]
                 $iAlign = if ($column.Alignment -eq "left") { -1 } else { 1 }     
-                $sValue = $Object.$sPropertyName
+                $sValue = if ($null -eq $Object.$sPropertyName) { '' } else { $Object.$sPropertyName.ToString() }
                 if ($sValue.Length -gt $column.width) {
                     $sValue = $sValue.SubString(0, $column.width - 1) + "…"
                 }

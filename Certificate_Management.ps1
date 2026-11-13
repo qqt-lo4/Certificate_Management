@@ -40,7 +40,7 @@ Write-Progress -Activity "Loading script modules" -Status "Loading end" -Percent
 #endregion Include
 
 #region script info
-#scriptVersion=2.8
+#scriptVersion=2.9
 #endregion script info
 
 #region Release notes
@@ -148,6 +148,27 @@ Changed:
     PKI request workflow, and Excel-friendly CSV export.
 - Added NetScaler ADC certificate discovery through a dedicated read-only Nitro module,
     available under the application server certificate menu.
+
+2.9 (2026-11-13):
+- Added a parameter form before running the expiring-certificate report: days ahead and
+    template inclusion/exclusion filters are prefilled from the saved configuration and can
+    be changed for that execution without saving them. Invalid values retain the entered data.
+- Added online CRL/OCSP revocation checks to the report: confirmed revoked certificates are
+    excluded, while inconclusive checks remain visible as Unknown. The list shows the status,
+    and CSV exports include both the revocation status and details.
+- Selecting an expiring certificate now displays its details and CA request metadata before
+    offering renewal, CSR-only generation, Windows viewer and OpenSSL actions. The report is
+    loaded once; returning from the details or exporting CSV does not query the PKI again.
+- Simplified the report table to CN, SAN, expiry date, days remaining, revocation status and
+    template. CN and SAN remain separate columns, with AutoWidth truncation applied to SAN.
+    Display column selection preserves all record properties for the details and CSV export.
+- Improved table sizing in narrow consoles: dates use the local short date format when needed,
+    column widths are recalculated, and rightmost columns are hidden if their headers cannot fit.
+    AutoWidth no longer receives a negative width, and dates and numbers are truncated correctly.
+    These display changes do not modify source objects or exported report data.
+- Fixed the missing RevocationDetails property that prevented report generation.
+- Fixed Exit in the expiring-certificate report: the action object is returned to the main menu,
+    which remains responsible for exiting the application.
 
 #>
 #endregion Release notes
@@ -1386,13 +1407,34 @@ function Show-NetScalerCertificateCheck_CLI {
 function Show-ExpiringCertificates_CLI {
     $iDaysAhead = 30
     if (-not [int]::TryParse([string]$ScriptConfig.ReportDaysAhead, [ref]$iDaysAhead) -or $iDaysAhead -lt 1) { $iDaysAhead = 30 }
-    $sTemplateFilter = [string]$ScriptConfig.ReportTemplateFilter
-    $sTemplateExcludeFilter = [string]$ScriptConfig.ReportTemplateExcludeFilter
-    foreach ($sFilter in @($sTemplateFilter, $sTemplateExcludeFilter) | Where-Object { $_ }) {
-        try { $null = [regex]::new($sFilter) } catch {
-            Write-Host "Invalid report template regular expression: $sFilter" -ForegroundColor Red
-            return
+    $hReportProperties = [ordered]@{
+        ReportDaysAhead = @{ Text = [string]$iDaysAhead; Regex = '^[0-9]+$' }
+        ReportTemplateFilter = @{ Text = [string]$ScriptConfig.ReportTemplateFilter }
+        ReportTemplateExcludeFilter = @{ Text = [string]$ScriptConfig.ReportTemplateExcludeFilter }
+    }
+    while ($true) {
+        $oReportParameters = Read-CLIDialogHashtable -Properties $hReportProperties `
+            -Header "Expiring certificate report parameters" -AllowCancel
+        if ($null -eq $oReportParameters) { return }
+        foreach ($sProperty in $hReportProperties.Keys) {
+            $hReportProperties[$sProperty].Text = [string]$oReportParameters[$sProperty]
         }
+
+        if (-not [int]::TryParse([string]$oReportParameters.ReportDaysAhead, [ref]$iDaysAhead) -or
+            $iDaysAhead -lt 1 -or $iDaysAhead -gt 36500) {
+            Write-Host "ReportDaysAhead must be between 1 and 36500." -ForegroundColor Red
+            continue
+        }
+        $sTemplateFilter = [string]$oReportParameters.ReportTemplateFilter
+        $sTemplateExcludeFilter = [string]$oReportParameters.ReportTemplateExcludeFilter
+        $bValidFilters = $true
+        foreach ($sFilter in @($sTemplateFilter, $sTemplateExcludeFilter) | Where-Object { $_ }) {
+            try { $null = [regex]::new($sFilter) } catch {
+                Write-Host "Invalid report template regular expression: $sFilter" -ForegroundColor Red
+                $bValidFilters = $false
+            }
+        }
+        if ($bValidFilters) { break }
     }
 
     $oCredential = $Global:PKICredential
@@ -1402,56 +1444,70 @@ function Show-ExpiringCertificates_CLI {
         $Global:PKICredential = $oCredential
     }
 
+    try {
+        $aExpiringCertificates = @(Get-ExpiringCAIssuedCertificates -Credential $oCredential `
+            -DaysAhead $iDaysAhead -TemplateFilter $sTemplateFilter `
+            -ExcludedTemplateFilter $sTemplateExcludeFilter -IncludeCertificate -CheckRevocation)
+    } catch {
+        Write-Warning "Could not list expiring certificates: $_"
+        return
+    }
+    if ($aExpiringCertificates.Count -eq 0) {
+        Write-Host "No certificates expire within the next $iDaysAhead day(s) after filtering and renewal deduplication." -ForegroundColor Green
+        return
+    }
+
+    $aRows = @($aExpiringCertificates | ForEach-Object {
+        $aSANParts = @()
+        if ($_.SAN) {
+            foreach ($sType in $_.SAN.Keys) {
+                $aValues = @($_.SAN[$sType] | Where-Object { $null -ne $_ -and [string]$_ -ne '' })
+                if ($aValues.Count -gt 0) { $aSANParts += "${sType}: $($aValues -join ', ')" }
+            }
+        }
+        [PSCustomObject]@{
+            CAName = $_.CAName
+            RequestID = $_.RequestID
+            SubmittedWhen = $_.SubmittedWhen
+            ResolvedWhen = $_.ResolvedWhen
+            CommonName = $_.CommonName
+            SAN = if ($aSANParts.Count) { $aSANParts -join '; ' } else { '-' }
+            CertificateTemplate = $_.CertificateTemplate
+            IssuedOn = $_.IssuedOn
+            NotAfter = $_.NotAfter
+            DaysRemaining = $_.DaysRemaining
+            RevocationStatus = $_.RevocationStatus
+            RevocationDetails = $_.RevocationDetails
+            RequesterName = $_.RequesterName
+            SerialNumber = $_.SerialNumber
+            CertificateHash = $_.CertificateHash
+            Certificate = $_.Certificate
+        }
+    })
+
     while ($true) {
-        try {
-            $aExpiringCertificates = @(Get-ExpiringCAIssuedCertificates -Credential $oCredential `
-                -DaysAhead $iDaysAhead -TemplateFilter $sTemplateFilter `
-                -ExcludedTemplateFilter $sTemplateExcludeFilter -IncludeCertificate)
-        } catch {
-            Write-Warning "Could not list expiring certificates: $_"
-            return
-        }
-        if ($aExpiringCertificates.Count -eq 0) {
-            Write-Host "No certificates expire within the next $iDaysAhead day(s) after filtering and renewal deduplication." -ForegroundColor Green
-            return
-        }
-
-        $aRows = @($aExpiringCertificates | ForEach-Object {
-            $aSANParts = @()
-            if ($_.SAN) {
-                foreach ($sType in $_.SAN.Keys) {
-                    $aValues = @($_.SAN[$sType] | Where-Object { $null -ne $_ -and [string]$_ -ne '' })
-                    if ($aValues.Count -gt 0) { $aSANParts += "${sType}: $($aValues -join ', ')" }
-                }
-            }
-            [PSCustomObject]@{
-                CAName = $_.CAName
-                CommonName = $_.CommonName
-                SAN = if ($aSANParts.Count) { $aSANParts -join '; ' } else { '-' }
-                CertificateTemplate = $_.CertificateTemplate
-                IssuedOn = $_.IssuedOn
-                NotAfter = $_.NotAfter
-                DaysRemaining = $_.DaysRemaining
-                RequesterName = $_.RequesterName
-                SerialNumber = $_.SerialNumber
-                Certificate = $_.Certificate
-            }
-        })
-
         $oSelection = Select-CLIDialogObjectInArray -Objects $aRows `
-            -SelectedColumns @('CAName', 'CommonName', @{ n = 'SAN'; e = { $_.SAN }; AutoWidth = $true }, 'CertificateTemplate', 'IssuedOn', 'NotAfter', 'DaysRemaining') `
-            -SelectHeaderMessage 'Certificates expiring soon: select one to start a prefilled request' `
+            -SelectedColumns @(
+                @{ n = 'CN'; e = { $_.CommonName } }
+                @{ n = 'SAN'; e = { $_.SAN }; AutoWidth = $true }
+                @{ n = 'Expires'; e = { $_.NotAfter } }
+                @{ n = 'Days'; e = { $_.DaysRemaining } }
+                @{ n = 'Status'; e = { $_.RevocationStatus } }
+                @{ n = 'Template'; e = { $_.CertificateTemplate } }
+            ) `
+            -SelectHeaderMessage 'Certificates expiring soon: select one to view its details' `
             -OtherMenuItems @(
                 New-CLIDialogButton -Text '&Generate CSV report' -Other -Object { 'ExportReport' }
                 New-CLIDialogButton -Text '&Exit' -Exit
-            ) -ItemsPerPage 10 -Space:$false -AllowBack
+            ) -ItemsPerPage 10 -Space:$false -AllowBack -HeaderTextInSeparator
 
+        if (Test-DialogAction $oSelection -Action 'Exit') { return $oSelection }
         if ($oSelection.PSTypeNames -and $oSelection.PSTypeNames[0] -eq 'DialogResult.Action.Other') {
             if ($oSelection.Value -eq 'ExportReport') {
                 $sOutputDir = Get-ScriptDir -OutputDir
                 New-Item -Path $sOutputDir -ItemType Directory -Force | Out-Null
                 $sReportPath = Join-Path $sOutputDir ("ExpiringCertificates_{0}.csv" -f (Get-Date -Format 'yyyyMMdd-HHmmss'))
-                $aRows | Select-Object CAName, CommonName, SAN, CertificateTemplate, IssuedOn, NotAfter, DaysRemaining, RequesterName, SerialNumber |
+                $aRows | Select-Object CAName, CommonName, SAN, CertificateTemplate, IssuedOn, NotAfter, DaysRemaining, RevocationStatus, RevocationDetails, RequesterName, SerialNumber, RequestID, SubmittedWhen, ResolvedWhen, CertificateHash |
                     Export-Csv -Path $sReportPath -NoTypeInformation -Encoding UTF8 -Delimiter ';'
                 Write-Host "Report saved to: $sReportPath" -ForegroundColor Cyan
             }
@@ -1459,16 +1515,65 @@ function Show-ExpiringCertificates_CLI {
         }
 
         if ($oSelection.PSTypeNames -and $oSelection.PSTypeNames[0] -eq 'DialogResult.Value') {
-            $oSelectedCertificate = $oSelection.Value.Certificate
-            if ($oSelectedCertificate -isnot [System.Security.Cryptography.X509Certificates.X509Certificate2]) {
-                Write-Warning 'The selected certificate could not be loaded from the CA database.'
-                continue
-            }
-            $hInitialValues = ConvertTo-CertFormValues -Certificate $oSelectedCertificate
-            New-PKISignedCertAndPFX_CLI -OpenSSLPath $OpenSSLPath -ItemsMode -InitialValues $hInitialValues | Out-Null
+            $oDetailResult = Show-ExpiringCertificateDetails_CLI -CertificateRecord $oSelection.Value -OpenSSLPath $OpenSSLPath
+            if (Test-DialogAction $oDetailResult -Action 'Exit') { return $oDetailResult }
             continue
         }
         return
+    }
+}
+
+function Show-ExpiringCertificateDetails_CLI {
+    Param(
+        [Parameter(Mandatory)]
+        [object]$CertificateRecord,
+        [string]$OpenSSLPath
+    )
+    $oCertificate = $CertificateRecord.Certificate
+    $bHasCertificate = $oCertificate -is [System.Security.Cryptography.X509Certificates.X509Certificate2]
+    if ($bHasCertificate) {
+        Write-CertificateToHost -Certificate $oCertificate -SkipChainCheck
+    } else {
+        Write-Warning 'The certificate could not be loaded from the CA database.'
+    }
+    Write-Host '------------------------ PKI request / report ------------------------' -ForegroundColor Blue
+    $CertificateRecord | Select-Object CAName, RequestID, RequesterName, CertificateTemplate, SubmittedWhen, ResolvedWhen,
+        IssuedOn, CommonName, SAN, NotAfter, DaysRemaining, SerialNumber, CertificateHash, RevocationStatus, RevocationDetails |
+        Format-List | Out-String -Width ([Math]::Max(40, (Get-Host).UI.RawUI.WindowSize.Width)) | Write-Host
+
+    $aActions = @()
+    if ($bHasCertificate) {
+        $aActions = @(
+            [PSCustomObject]@{ Id = 'Renew'; Text = 'Renew this certificate (review the prefilled request)' }
+            [PSCustomObject]@{ Id = 'CSR'; Text = 'Create only a CSR from this certificate' }
+            [PSCustomObject]@{ Id = 'Windows'; Text = 'Open in the Windows certificate viewer' }
+            [PSCustomObject]@{ Id = 'OpenSSL'; Text = 'Show the full details (OpenSSL)' }
+        )
+    }
+    while ($true) {
+        $oAction = Select-CLIDialogObjectInArray -Objects $aActions `
+            -SelectedColumns @{ l = 'Action'; e = { $_.Text } } -SelectHeaderMessage 'What do you want to do?' `
+            -OtherMenuItems @(
+                New-CLIDialogButton -Text '&Back' -Back
+                New-CLIDialogButton -Text '&Exit' -Exit
+            ) -EmptyArrayMessage 'No certificate is available for renewal.' `
+            -FooterMessage '' -SeparatorColor Blue -HeaderTextInSeparator -Space -DontShowPageNumberWhenOnlyOnePage
+        if (Test-DialogAction $oAction -Action 'Exit') { return $oAction }
+        if (Test-DialogAction $oAction) { return }
+        $oActionResult = $null
+        switch ($oAction.Value.Id) {
+            'Renew' {
+                $oActionResult = New-PKISignedCertAndPFX_CLI -OpenSSLPath $OpenSSLPath -ItemsMode `
+                    -InitialValues (ConvertTo-CertFormValues -Certificate $oCertificate)
+            }
+            'CSR' {
+                $oActionResult = New-CSR_CLI -OpenSSLPath $OpenSSLPath -ItemsMode `
+                    -InitialValues (ConvertTo-CertFormValues -Certificate $oCertificate)
+            }
+            'Windows' { Show-CertificateInWindowsViewer -Certificate $oCertificate }
+            'OpenSSL' { Show-CertificateOpenSSLText -Certificate $oCertificate -OpenSSLPath $OpenSSLPath }
+        }
+        if (Test-DialogAction $oActionResult -Action 'Exit') { return $oActionResult }
     }
 }
 
@@ -2662,7 +2767,8 @@ function Write-CertificateToHost {
     Param(
         [Parameter(Mandatory)]
         [System.Security.Cryptography.X509Certificates.X509Certificate2]$Certificate,
-        [System.Security.Cryptography.X509Certificates.X509Certificate2[]]$ExtraCertificates
+        [System.Security.Cryptography.X509Certificates.X509Certificate2[]]$ExtraCertificates,
+        [switch]$SkipChainCheck
     )
     $oCert = $Certificate
 
@@ -2773,6 +2879,8 @@ function Write-CertificateToHost {
         Write-Verbose "Cannot read certificate URLs: $_"
     }
     Write-Field "Private key" $(if ($oCert.HasPrivateKey) { "Yes" } else { "No" })
+
+    if ($SkipChainCheck) { return }
 
     # Chain validation on this computer (revocation checked online, may take a few seconds)
     Write-Host "-------------------------- Chain check ----------------------------" -ForegroundColor Blue

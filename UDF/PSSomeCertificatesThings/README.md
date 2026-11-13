@@ -20,6 +20,7 @@ A PowerShell module for certificate management utilities: PKI and CA operations,
 | `ConvertTo-DERString` | Converts byte arrays to DER (Distinguished Encoding Rules) string format |
 | `Get-CertificateURL` | Extracts CDP, AIA, and OCSP URLs from a certificate using cryptnet.dll |
 | `Get-CRL` | Downloads and parses a Certificate Revocation List from a URL |
+| `Test-CertificateRevocation` | Checks a certificate online through the Windows chain engine and reports Good, Revoked, or Unknown |
 | `New-OpenSSLCSR` | Creates a CSR and private key using OpenSSL (v1.1) |
 | `Merge-OpenSSLPFX` | Merges a private key, certificate, and chain into a PFX file using OpenSSL |
 | `Get-CertificateTemplate` | Extracts certificate template information from an X509Certificate2 object |

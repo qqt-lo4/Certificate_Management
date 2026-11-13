@@ -50,7 +50,7 @@ The main menu offers:
 4. **View a certificate** - Display the details of a certificate
 5. **Export / Convert certificate** - Convert a PFX to other formats
 6. **Change the certificate of an application server** - **RDS server** or **SQL Server**
-7. **Certificates expiring soon** - Select an expiring certificate to start a prefilled PKI request, or export the list
+7. **Certificates expiring soon** - Set report parameters, then select a certificate to view its details and CA request metadata before choosing renewal, CSR-only generation, Windows viewer or OpenSSL. Export the list as CSV; returning from a detail view reuses the loaded report without querying the PKI again.
 8. **Settings** - Configure selection and report filters
 
 NetScaler checks are available under **Change the certificate of an application server**. They require the ADC HTTPS management URL and a read-only Nitro API credential; the script discovers candidate SSL vServers, SNI bindings and explicit Content Switching host rules.
