@@ -40,7 +40,7 @@ Write-Progress -Activity "Loading script modules" -Status "Loading end" -Percent
 #endregion Include
 
 #region script info
-#scriptVersion=2.9
+#scriptVersion=2.10
 #endregion script info
 
 #region Release notes
@@ -171,6 +171,15 @@ Changed:
 - Fixed the missing RevocationDetails property that prevented report generation.
 - Fixed Exit in the expiring-certificate report: the action object is returned to the main menu,
     which remains responsible for exiting the application.
+
+2.10 (2026-11-16):
+- Added an In PFX column to the certificate viewer: certificate fingerprints are compared
+    with the actual PFX contents, independently of private key presence. Certificates found
+    outside the file while completing its chain are displayed as not included.
+- PFX files containing a single certificate also show the certificate selection list.
+    Complementary certificates loaded for display are released when leaving the viewer.
+- Fixed "View a certificate" when no working folder contains certificate files: the selector
+    now accepts empty collections, keeping Other source, Back and Exit available.
 
 #>
 #endregion Release notes
@@ -2994,8 +3003,26 @@ function Show-CertificateSource_CLI {
         New-CLIDialogButton -Text "&Exit" -Exit
     )
 
+    $hPfxThumbprints = @{}
+    $bPfxSource = $false
+    $aAdditionalCertificates = @()
     $aCerts = try {
-        @(Get-SortedCertificateChain -Certificates @(Get-CertificateFromInput -InputString $Source))
+        $aSourceCertificates = @(Get-CertificateFromInput -InputString $Source)
+        $sSourcePath = $Source.Trim().Trim('"').Trim("'")
+        if (Test-Path -LiteralPath $sSourcePath -PathType Leaf) {
+            try {
+                $bPfxSource = [System.Security.Cryptography.X509Certificates.X509Certificate2]::GetCertContentType($sSourcePath) -eq
+                    [System.Security.Cryptography.X509Certificates.X509ContentType]::Pfx
+            } catch {
+                $bPfxSource = $false
+            }
+        }
+        if ($bPfxSource) {
+            foreach ($oSourceCertificate in $aSourceCertificates) {
+                $hPfxThumbprints[$oSourceCertificate.Thumbprint] = $true
+            }
+        }
+        @(Get-SortedCertificateChain -Certificates $aSourceCertificates)
     } catch {
         Write-Host "Failed to load the certificate: $_" -ForegroundColor Red
         Write-Host ""
@@ -3007,18 +3034,59 @@ function Show-CertificateSource_CLI {
         return
     }
 
+    $aCerts = @($aCerts)
+    if ($bPfxSource) {
+        $oPfxChain = New-Object System.Security.Cryptography.X509Certificates.X509Chain
+        try {
+            $oPfxChain.ChainPolicy.RevocationMode = [System.Security.Cryptography.X509Certificates.X509RevocationMode]::NoCheck
+            $oPfxChain.ChainPolicy.UrlRetrievalTimeout = New-TimeSpan -Seconds 5
+            if ($oPfxChain.ChainPolicy.PSObject.Properties['DisableCertificateDownloads']) {
+                $oPfxChain.ChainPolicy.DisableCertificateDownloads = $true
+            }
+            foreach ($oSourceCertificate in $aCerts) {
+                $oPfxChain.ChainPolicy.ExtraStore.Add($oSourceCertificate) | Out-Null
+            }
+            $null = $oPfxChain.Build($aCerts[0])
+            foreach ($oElement in $oPfxChain.ChainElements) {
+                if ($aCerts.Thumbprint -notcontains $oElement.Certificate.Thumbprint) {
+                    $oAdditionalCertificate = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2(,$oElement.Certificate.RawData)
+                    $aAdditionalCertificates += $oAdditionalCertificate
+                    $aCerts += $oAdditionalCertificate
+                }
+            }
+            $aCerts = @(Get-SortedCertificateChain -Certificates $aCerts)
+        } catch {
+            Write-Verbose "Could not complete the PFX certificate chain: $_"
+        } finally {
+            $oPfxChain.Dispose()
+        }
+    }
+
+    try {
     while ($true) {
         # Several certificates (P7B, PEM bundle, PFX with its chain): choose one
-        $oCert = if ($aCerts.Count -eq 1) {
+        $oCert = if ($aCerts.Count -eq 1 -and -not $bPfxSource) {
             $aCerts[0]
         } else {
             $aItems = for ($i = 0; $i -lt $aCerts.Count; $i++) {
                 $sRole = if ($i -eq 0) { "Leaf" } elseif ($aCerts[$i].Subject -eq $aCerts[$i].Issuer) { "Root" } else { "CA" }
-                [pscustomobject]@{ Index = $i; Role = $sRole; Subject = $aCerts[$i].Subject; Expires = $aCerts[$i].NotAfter.ToString("yyyy-MM-dd") }
+                [pscustomobject]@{
+                    Index = $i
+                    Role = $sRole
+                    InPfx = if ($bPfxSource) { if ($hPfxThumbprints.ContainsKey($aCerts[$i].Thumbprint)) { 'Yes' } else { 'No' } } else { $null }
+                    Subject = $aCerts[$i].Subject
+                    Expires = $aCerts[$i].NotAfter.ToString("yyyy-MM-dd")
+                }
             }
+            $aCertificateColumns = @(@{ l = "Role"; e = { $_.Role } })
+            if ($bPfxSource) { $aCertificateColumns += @{ l = "In PFX"; e = { $_.InPfx } } }
+            $aCertificateColumns += @(
+                @{ l = "Subject"; e = { $_.Subject }; AutoWidth = $true }
+                @{ l = "Expires"; e = { $_.Expires } }
+            )
             $oCertSel = Select-CLIDialogObjectInArray -Objects @($aItems) `
-                -SelectedColumns @(@{ l = "Role"; e = { $_.Role } }, @{ l = "Subject"; e = { $_.Subject } }, @{ l = "Expires"; e = { $_.Expires } }) `
-                -SelectHeaderMessage "$($aCerts.Count) certificates in this file, which one do you want to view?" `
+                -SelectedColumns $aCertificateColumns `
+                -SelectHeaderMessage "$($aCerts.Count) certificates, which one do you want to view?" `
                 -OtherMenuItems $aNavButtons `
                 -FooterMessage "" -SeparatorColor $cSep -HeaderTextInSeparator -Space -DontShowPageNumberWhenOnlyOnePage
             if (Test-DialogAction $oCertSel -Action "Exit") { return $oCertSel }
@@ -3067,7 +3135,12 @@ function Show-CertificateSource_CLI {
             }
         }
         # Back from the certificate: to the certificate list, or out when there is only one
-        if ($aCerts.Count -eq 1) { return }
+        if ($aCerts.Count -eq 1 -and -not $bPfxSource) { return }
+    }
+    } finally {
+        foreach ($oAdditionalCertificate in $aAdditionalCertificates) {
+            $oAdditionalCertificate.Dispose()
+        }
     }
 }
 

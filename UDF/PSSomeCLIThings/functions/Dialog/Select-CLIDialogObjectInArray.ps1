@@ -382,6 +382,7 @@ function Select-CLIDialogObjectInArray {
     Param(
         [Parameter(Mandatory, ValueFromPipeline)]
         [AllowNull()]
+        [AllowEmptyCollection()]
         [array]$Objects,
         [object[]]$SelectedColumns,
         [object]$Sort,
