@@ -10,7 +10,7 @@ Microsoft SQL Server helpers: instance discovery and TLS certificate renewal.
 | Function | Description |
 |---|---|
 | `Get-MSSqlInstance` | Lists the instances of a computer (local or through a PSSession): version, service, TCP port, ForceEncryption and configured TLS certificate. Read only |
-| `Set-MSSqlCertificate` | Prepares a new TLS certificate for an instance without restarting it: PFX import into LocalMachine\My, read access to the private key for the service account, thumbprint in the instance configuration |
+| `Set-MSSqlCertificate` | Prepares a new TLS certificate for an instance without restarting it: imports a non-exportable machine key into LocalMachine\My by default (use `-Exportable` to opt in), grants read access to the private key for the service account, and sets the thumbprint in the instance configuration |
 | `Restart-MSSqlInstance` | Restarts the service of an instance and the dependent services that were running |
 
 SQL Server reads its certificate when the service starts: after `Set-MSSqlCertificate`, the new certificate is used at the next restart of the instance. The encryption settings (ForceEncryption...) are never changed.

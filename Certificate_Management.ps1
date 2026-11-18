@@ -40,7 +40,7 @@ Write-Progress -Activity "Loading script modules" -Status "Loading end" -Percent
 #endregion Include
 
 #region script info
-#scriptVersion=2.10
+#scriptVersion=2.11
 #endregion script info
 
 #region Release notes
@@ -180,6 +180,11 @@ Changed:
     Complementary certificates loaded for display are released when leaving the viewer.
 - Fixed "View a certificate" when no working folder contains certificate files: the selector
     now accepts empty collections, keeping Other source, Back and Exit available.
+
+2.11 (2026-11-18):
+- Added a SQL Server deployment prompt for private-key exportability. The default keeps the
+    installed machine key non-exportable; users can explicitly allow export when required.
+    The SQL service account retains read access in either case.
 
 #>
 #endregion Release notes
@@ -2516,14 +2521,20 @@ function Set-MSSqlCertificate_CLI {
         Write-DeploymentCertificateCheck -Certificate $oPfx.Certificate -ServerName $sServer -CheckServerAuthentication `
             -ChainHint "Clients that validate the server certificate (TrustServerCertificate=False) will refuse the connection."
 
-        # 7. Prepare the certificate (no interruption)
+        # 7. Choose the private-key export policy (non-exportable by default)
+        $bExportPrivateKey = (Invoke-YesNoCLIDialog -YN -Vertical -Recommended No `
+            -Message "Allow exporting this private key from the SQL Server certificate store?" `
+            -YesButtonText "&Allow export" -NoButtonText "&Keep non-exportable") -eq "Yes"
+
+        # 8. Prepare the certificate (no interruption)
         $sConfirm = Invoke-YesNoCLIDialog -YN -Vertical `
             -Message "Prepare this certificate for instance $($oInstance.InstanceName) on $sServer ? The instance is not restarted at this step." `
             -YesButtonText "&Yes, prepare it" -NoButtonText "&No, cancel"
         if ($sConfirm -ne "Yes") { continue }
         Write-Host "Preparing the certificate on $sServer ..." -ForegroundColor Cyan
         $oResult = try {
-            Set-MSSqlCertificate -Session $Global:MSSqlSession -InstanceName $oInstance.InstanceName -PfxPath $oPfx.PfxPath -Password $oPfx.Password -ErrorAction Stop
+            Set-MSSqlCertificate -Session $Global:MSSqlSession -InstanceName $oInstance.InstanceName `
+                -PfxPath $oPfx.PfxPath -Password $oPfx.Password -Exportable:$bExportPrivateKey -ErrorAction Stop
         } catch {
             [pscustomobject]@{ Success = $false; Error = "$_"; Warnings = @() }
         }
@@ -2541,6 +2552,8 @@ function Set-MSSqlCertificate_CLI {
             default          { "$($oResult.KeyAccess)" }
         }
         Write-Host "  [OK] Certificate imported in LocalMachine\My ($($oResult.KeyStorage) key)" -ForegroundColor Green
+        $sExportStatus = if ($oResult.KeyExportable) { "allowed" } else { "disabled" }
+        Write-Host "  [OK] Private-key export: $sExportStatus" -ForegroundColor Green
         Write-Host "  [OK] Private key: $sKeyAccess" -ForegroundColor Green
         Write-Host "  [OK] Instance configured with $($oResult.Thumbprint)" -ForegroundColor Green
         Write-Host ""

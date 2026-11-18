@@ -5,7 +5,7 @@
     RootModule        = 'PSSomeMSSqlThings.psm1'
 
     # Version number of this module
-    ModuleVersion     = '1.0.0'
+    ModuleVersion     = '1.1.0'
 
     # ID used to uniquely identify this module
     GUID              = '550c904e-6c19-4cfc-83bb-81cd7dd7b797'

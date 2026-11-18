@@ -49,7 +49,7 @@ The main menu offers:
 3. **Advanced certificate generation** - Individual steps for partial workflows
 4. **View a certificate** - Display the details of a certificate
 5. **Export / Convert certificate** - Convert a PFX to other formats
-6. **Change the certificate of an application server** - **RDS server** or **SQL Server**
+6. **Change the certificate of an application server** - **RDS server** or **SQL Server**; SQL Server private-key export is disabled by default and can be explicitly allowed during deployment
 7. **Certificates expiring soon** - Set report parameters, then select a certificate to view its details and CA request metadata before choosing renewal, CSR-only generation, Windows viewer or OpenSSL. Export the list as CSV; returning from a detail view reuses the loaded report without querying the PKI again.
 8. **Settings** - Configure selection and report filters
 

@@ -5,9 +5,9 @@ function Set-MSSqlCertificate {
 
     .DESCRIPTION
         Performs, on the computer of the session:
-          1. Import of the PFX into Cert:\LocalMachine\My (machine key, exportable). The
-             intermediate certificates of the PFX go to LocalMachine\CA; root certificates are
-             never added to the trusted roots.
+             1. Import of the PFX into Cert:\LocalMachine\My. The machine key is non-exportable
+                 by default; use -Exportable to opt in. Intermediate certificates go to
+                 LocalMachine\CA; root certificates are never added to the trusted roots.
           2. Read access to the private key for the account of the instance service, when it is
              missing (not needed for LocalSystem). Without it the instance cannot load the
              certificate and does not start.
@@ -36,11 +36,16 @@ function Set-MSSqlCertificate {
     .PARAMETER Password
         Password of the PFX.
 
+    .PARAMETER Exportable
+        Allow exporting the private key from the SQL Server computer's certificate store.
+        By default, the imported machine key is non-exportable.
+
     .OUTPUTS
         [PSCustomObject] with:
           Success, Error,
           Thumbprint, PreviousThumbprint,
           ServiceName, ServiceAccount,
+          KeyExportable,
           KeyStorage (e.g. "CAPI Exchange", "CNG"), KeyAccess (Granted, AlreadyGranted,
           NotNeeded), Warnings (string[])
 
@@ -49,12 +54,16 @@ function Set-MSSqlCertificate {
 
     .NOTES
         Author  : Loïc Ade
-        Version : 1.0.0
+        Version : 1.1.0
 
         CHANGELOG:
 
         Version 1.0.0 - 2026-11-06 - Loïc Ade
             - Initial release
+
+        Version 1.1.0 - 2026-11-18
+            - Imported private keys are non-exportable by default; -Exportable opts in.
+            - Return the selected export policy in KeyExportable.
     #>
     [CmdletBinding()]
     Param(
@@ -66,7 +75,8 @@ function Set-MSSqlCertificate {
         [string]$PfxPath,
         [Parameter(Mandatory)]
         [AllowEmptyString()]
-        [securestring]$Password
+        [securestring]$Password,
+        [switch]$Exportable
     )
     if (-not (Test-Path -LiteralPath $PfxPath -PathType Leaf)) {
         throw "PFX file not found: $PfxPath"
@@ -77,8 +87,8 @@ function Set-MSSqlCertificate {
     }
     Copy-Item -LiteralPath $PfxPath -Destination $sRemoteTemp -ToSession $Session -Force
     try {
-        $oResult = Invoke-Command -Session $Session -ArgumentList $sRemoteTemp, $Password, $InstanceName -ScriptBlock {
-            param($PfxPath, $Password, $InstanceName)
+        $oResult = Invoke-Command -Session $Session -ArgumentList $sRemoteTemp, $Password, $InstanceName, $Exportable.IsPresent -ScriptBlock {
+            param($PfxPath, [System.Security.SecureString]$Password, $InstanceName, [bool]$Exportable)
             $hResult = [ordered]@{
                 Success            = $false
                 Error              = $null
@@ -86,6 +96,7 @@ function Set-MSSqlCertificate {
                 PreviousThumbprint = $null
                 ServiceName        = $null
                 ServiceAccount     = $null
+                KeyExportable      = $Exportable
                 KeyStorage         = $null
                 KeyAccess          = $null
                 Warnings           = @()
@@ -108,7 +119,7 @@ function Set-MSSqlCertificate {
                 $hResult.ServiceName = $sService
                 $hResult.ServiceAccount = $oService.StartName
 
-                # 1. Import: machine key, persisted, exportable (default provider of the PFX)
+                # Import the persisted machine key without granting export permission.
                 $pBSTR = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($Password)
                 try {
                     $sPlain = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($pBSTR)
@@ -116,8 +127,10 @@ function Set-MSSqlCertificate {
                     [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($pBSTR)
                 }
                 $eFlags = [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::MachineKeySet -bor
-                          [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::PersistKeySet -bor
-                          [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::Exportable
+                          [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::PersistKeySet
+                if ($Exportable) {
+                    $eFlags = $eFlags -bor [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::Exportable
+                }
                 $oPfx = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2Collection
                 $oPfx.Import($PfxPath, $sPlain, $eFlags)
                 $oLeaf = @($oPfx | Where-Object { $_.HasPrivateKey })[0]
