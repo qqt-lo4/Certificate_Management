@@ -43,27 +43,34 @@ function Read-CertificateRevocationList {
         $iIndex++
     }
     $bIsDeltaCRL = $false
+    $aFreshestCRLUrls = [System.Collections.Generic.List[string]]::new()
     if (($iIndex -lt $aTbs.Count) -and ($aTbs[$iIndex].Tag -eq 0xa0)) {
         $aExplicitExtensions = @(Get-DerChildren -Data $RawData -Parent $aTbs[$iIndex])
         foreach ($oExtensionSequence in $aExplicitExtensions) {
-            if ($oExtensionSequence.Tag -eq 0x30) {
-                foreach ($oExtension in @(Get-DerChildren -Data $RawData -Parent $oExtensionSequence)) {
-                    if ($oExtension.Tag -ne 0x30) { continue }
-                    $aExtensionFields = @(Get-DerChildren -Data $RawData -Parent $oExtension)
-                    if ($aExtensionFields.Count -gt 1 -and
-                        (ConvertFrom-DerObjectIdentifier -Data $RawData -Element $aExtensionFields[0]) -eq '2.5.29.27') {
-                        $bIsDeltaCRL = $true
-                        break
+            if ($oExtensionSequence.Tag -ne 0x30) { continue }
+            foreach ($oExtension in @(Get-DerChildren -Data $RawData -Parent $oExtensionSequence)) {
+                if ($oExtension.Tag -ne 0x30) { continue }
+                $aExtensionFields = @(Get-DerChildren -Data $RawData -Parent $oExtension)
+                if ($aExtensionFields.Count -lt 2) { continue }
+                $sExtensionOID = ConvertFrom-DerObjectIdentifier -Data $RawData -Element $aExtensionFields[0]
+                if ($sExtensionOID -eq '2.5.29.27') { $bIsDeltaCRL = $true }
+                if ($sExtensionOID -eq '2.5.29.46') {
+                    $oValue = $aExtensionFields | Where-Object { $_.Tag -eq 0x04 } | Select-Object -Last 1
+                    if (-not $oValue -or $oValue.Length -eq 0) { throw 'Freshest CRL extension has no value.' }
+                    $aExtensionData = [byte[]]$RawData[$oValue.ContentStart..($oValue.End - 1)]
+                    $oExtensionRoot = Read-DerElement -Data $aExtensionData -Offset 0
+                    $aPendingElements = [System.Collections.Generic.Stack[object]]::new()
+                    $aPendingElements.Push($oExtensionRoot)
+                    while ($aPendingElements.Count -gt 0) {
+                        $oElement = $aPendingElements.Pop()
+                        if ($oElement.Tag -eq 0x86 -and $oElement.Length -gt 0) {
+                            $sURL = [System.Text.Encoding]::ASCII.GetString($aExtensionData, $oElement.ContentStart, $oElement.Length)
+                            if ($sURL -and -not $aFreshestCRLUrls.Contains($sURL)) { $aFreshestCRLUrls.Add($sURL) }
+                        } elseif (($oElement.Tag -band 0x20) -ne 0) {
+                            foreach ($oChild in (Get-DerChildren -Data $aExtensionData -Parent $oElement)) { $aPendingElements.Push($oChild) }
+                        }
                     }
                 }
-                continue
-            }
-            if ($oExtensionSequence.Tag -ne 0x30) { continue }
-            $aExtensionFields = @(Get-DerChildren -Data $RawData -Parent $oExtensionSequence)
-            if ($aExtensionFields.Count -gt 1 -and
-                (ConvertFrom-DerObjectIdentifier -Data $RawData -Element $aExtensionFields[0]) -eq '2.5.29.27') {
-                $bIsDeltaCRL = $true
-                break
             }
         }
     }
@@ -116,6 +123,7 @@ function Read-CertificateRevocationList {
         NextUpdate = $oNextUpdateValue
         RevokedCount = $iRevokedCount
         IsDelta = $bIsDeltaCRL
+        FreshestCRLUrls = $aFreshestCRLUrls.ToArray()
         SignatureAlgorithm = $sSignatureAlgorithm
         SignatureStatus = $sSignatureStatus
     }

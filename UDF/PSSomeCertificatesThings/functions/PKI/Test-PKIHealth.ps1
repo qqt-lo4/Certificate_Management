@@ -4,7 +4,13 @@ function Test-PKIHealth {
         Checks AD CS inventory, CA certificates and published/retrieved CRLs.
 
     .PARAMETER ExpiringWithinDays
-        Warn when a CA certificate or CRL expires within this many days. Default: 30.
+        Warn when a CA certificate expires within this many days. Default: 30.
+
+    .PARAMETER CRLWarningRemainingPercent
+        Warn when a CRL has this percentage or less of its validity period remaining. Default: 5.
+
+    .PARAMETER CRLCriticalRemainingPercent
+        Report a CRL as critical when this percentage or less remains. Default: 2.
 
     .PARAMETER DownloadTimeoutSeconds
         Timeout per CRL distribution point download. Default: 8 seconds.
@@ -16,10 +22,17 @@ function Test-PKIHealth {
     Param(
         [ValidateRange(1, 365)]
         [int]$ExpiringWithinDays = 30,
+        [ValidateRange(1, 99)]
+        [int]$CRLWarningRemainingPercent = 5,
+        [ValidateRange(0, 98)]
+        [int]$CRLCriticalRemainingPercent = 2,
         [ValidateRange(1, 120)]
         [int]$DownloadTimeoutSeconds = 8
     )
 
+    if ($CRLCriticalRemainingPercent -ge $CRLWarningRemainingPercent) {
+        throw 'CRLCriticalRemainingPercent must be lower than CRLWarningRemainingPercent.'
+    }
     $aFindings = [System.Collections.Generic.List[object]]::new()
     $dtNowUtc = [DateTime]::UtcNow
     $addFinding = {
@@ -184,9 +197,38 @@ function Test-PKIHealth {
 
         try {
             $oURLs = Get-CertificateURL -Cert $oCertificate -WarningAction SilentlyContinue
-            foreach ($sURL in @($oURLs.CDP | Where-Object { $_ } | Sort-Object -Unique)) {
-                if ($hCheckedCRLs.ContainsKey($sURL)) { continue }
-                $hCheckedCRLs[$sURL] = $true
+            $aCRLQueue = [System.Collections.Generic.List[object]]::new()
+            foreach ($sURL in @($oURLs.CDP | Where-Object { $_ })) {
+                $aCRLQueue.Add([PSCustomObject]@{ URL = [string]$sURL; Type = 'Base' })
+            }
+            foreach ($sURL in @($oURLs.DeltaCRL | Where-Object { $_ })) {
+                $aCRLQueue.Add([PSCustomObject]@{ URL = [string]$sURL; Type = 'Delta' })
+            }
+
+            $oAuthority = $aAuthorities | Where-Object { $_.Name -ieq $sAuthority -and $_.dNSHostName } | Select-Object -First 1
+            if ($oAuthority) {
+                $oCARequest = $null
+                try {
+                    $oCARequest = New-Object -ComObject CertificateAuthority.Request
+                    $sConfiguration = "$($oAuthority.dNSHostName)\$($oAuthority.Name)"
+                    $sCDPUrls = [string]$oCARequest.GetCAProperty($sConfiguration, 41, 0, 4, 0)
+                    foreach ($sURL in ($sCDPUrls -split '[\r\n]+')) {
+                        if ($sURL.Trim()) { $aCRLQueue.Add([PSCustomObject]@{ URL = $sURL.Trim(); Type = 'Base' }) }
+                    }
+                } catch {
+                    & $addFinding 'Warning' $sAuthority 'CA CRL distribution points' "Could not query active CA CRL URLs: $_" $null $null $null
+                } finally {
+                    if ($oCARequest) { [void][Runtime.InteropServices.Marshal]::ReleaseComObject($oCARequest) }
+                }
+            }
+
+            for ($iCRLIndex = 0; $iCRLIndex -lt $aCRLQueue.Count; $iCRLIndex++) {
+                $oCRLRequest = $aCRLQueue[$iCRLIndex]
+                $sURL = $oCRLRequest.URL
+                $sCRLKey = "$($oCRLRequest.Type)|$sURL"
+                if ($hCheckedCRLs.ContainsKey($sCRLKey)) { continue }
+                $hCheckedCRLs[$sCRLKey] = $true
+                $sCheck = if ($oCRLRequest.Type -eq 'Delta') { 'Delta CRL endpoint' } else { 'CRL endpoint' }
                 try {
                     $aRawCRL = Get-CRL -URL $sURL -DownloadTimeout $DownloadTimeoutSeconds -ReturnRawData -ErrorAction Stop
                     if ($aRawCRL -isnot [byte[]]) { throw "The CRL endpoint did not return DER bytes: $aRawCRL" }
@@ -195,13 +237,19 @@ function Test-PKIHealth {
                         [System.Linq.Enumerable]::SequenceEqual([byte[]]$_.Certificate.SubjectName.RawData, [byte[]]$oCRL.IssuerRawData)
                     } | Select-Object -First 1
                     $oCRLHealth = if ($oCRLIssuer) {
-                        Test-CertificateRevocationList -RawData $aRawCRL -IssuerCertificate $oCRLIssuer.Certificate -ExpiringWithinDays $ExpiringWithinDays
+                        Test-CertificateRevocationList -RawData $aRawCRL -IssuerCertificate $oCRLIssuer.Certificate -ExpectedType $oCRLRequest.Type -WarningRemainingPercent $CRLWarningRemainingPercent -CriticalRemainingPercent $CRLCriticalRemainingPercent
                     } else {
-                        Test-CertificateRevocationList -RawData $aRawCRL -ExpiringWithinDays $ExpiringWithinDays
+                        Test-CertificateRevocationList -RawData $aRawCRL -ExpectedType $oCRLRequest.Type -WarningRemainingPercent $CRLWarningRemainingPercent -CriticalRemainingPercent $CRLCriticalRemainingPercent
                     }
-                    & $addFinding $oCRLHealth.Status $sAuthority 'CRL endpoint' $oCRLHealth.Details $sURL $oCRLHealth.ThisUpdate $oCRLHealth.NextUpdate
+                    $sCRLAuthority = if ($oCRLIssuer) { $oCRLIssuer.Certificate.GetNameInfo([System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false) } else { $sAuthority }
+                    & $addFinding $oCRLHealth.Status $sCRLAuthority $sCheck $oCRLHealth.Details $sURL $oCRLHealth.ThisUpdate $oCRLHealth.NextUpdate
+                    if ($oCRLRequest.Type -eq 'Base' -and -not $oCRL.IsDelta -and $oCRLHealth.SignatureStatus -eq 'Valid') {
+                        foreach ($sDeltaURL in @($oCRL.FreshestCRLUrls | Where-Object { $_ })) {
+                            $aCRLQueue.Add([PSCustomObject]@{ URL = [string]$sDeltaURL; Type = 'Delta' })
+                        }
+                    }
                 } catch {
-                    & $addFinding 'Critical' $sAuthority 'CRL endpoint' "Could not download or decode CRL: $_" $sURL $null $null
+                    & $addFinding 'Critical' $sAuthority $sCheck "Could not download or decode CRL: $_" $sURL $null $null
                 }
             }
         } catch {
@@ -230,13 +278,14 @@ function Test-PKIHealth {
             foreach ($aRawCRL in $aPublishedCRLs) {
                 try {
                     $oCRL = Read-CertificateRevocationList -RawData $aRawCRL
+                    $sExpectedType = if ($sCRLProperty -eq 'DeltaCRLData') { 'Delta' } else { 'Base' }
                     $oCRLIssuer = $aCertificates | Where-Object {
                         [System.Linq.Enumerable]::SequenceEqual([byte[]]$_.Certificate.SubjectName.RawData, [byte[]]$oCRL.IssuerRawData)
                     } | Select-Object -First 1
                     $oCRLHealth = if ($oCRLIssuer) {
-                        Test-CertificateRevocationList -RawData $aRawCRL -IssuerCertificate $oCRLIssuer.Certificate -ExpiringWithinDays $ExpiringWithinDays
+                        Test-CertificateRevocationList -RawData $aRawCRL -IssuerCertificate $oCRLIssuer.Certificate -ExpectedType $sExpectedType -WarningRemainingPercent $CRLWarningRemainingPercent -CriticalRemainingPercent $CRLCriticalRemainingPercent
                     } else {
-                        Test-CertificateRevocationList -RawData $aRawCRL -ExpiringWithinDays $ExpiringWithinDays
+                        Test-CertificateRevocationList -RawData $aRawCRL -ExpectedType $sExpectedType -WarningRemainingPercent $CRLWarningRemainingPercent -CriticalRemainingPercent $CRLCriticalRemainingPercent
                     }
                     $sCheck = if ($sCRLProperty -eq 'DeltaCRLData') { 'Delta CRL publication in AD' } else { 'CRL publication in AD' }
                     $sDetails = "AD CDP '$($oPublishedCDP.subject)'. $($oCRLHealth.Details)"

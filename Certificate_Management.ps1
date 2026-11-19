@@ -1640,7 +1640,7 @@ function Show-PKIHealth_CLI {
                     }
                 } }
                 'Authority', 'Check',
-                @{ n = 'NextUpdate'; e = { $_.NextUpdate } },
+                @{ n = 'NextUpdate'; e = { if ($null -ne $_.NextUpdate) { $_.NextUpdate.ToLocalTime() } } },
                 @{ n = 'Details'; e = { $_.Details }; AutoWidth = $true }
             ) `
             -SelectHeaderMessage 'PKI health findings (the report is not recalculated when returning)' `
@@ -1664,7 +1664,11 @@ function Show-PKIHealth_CLI {
         if ($oSelection.PSTypeNames -and $oSelection.PSTypeNames[0] -eq 'DialogResult.Value') {
             Write-Host ''
             foreach ($sProperty in @('Status', 'Authority', 'Check', 'Details', 'URL', 'ThisUpdate', 'NextUpdate')) {
-                Write-Field -Name $sProperty -Value $oSelection.Value.$sProperty
+                $oValue = $oSelection.Value.$sProperty
+                if ($sProperty -in @('ThisUpdate', 'NextUpdate') -and $null -ne $oValue) {
+                    $oValue = $oValue.ToLocalTime()
+                }
+                Write-Field -Name $sProperty -Value $oValue
             }
             Write-Host ''
             continue
