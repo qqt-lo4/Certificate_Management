@@ -42,6 +42,31 @@ function Read-CertificateRevocationList {
         $iRevokedCount = @(Get-DerChildren -Data $RawData -Parent $aTbs[$iIndex]).Count
         $iIndex++
     }
+    $bIsDeltaCRL = $false
+    if (($iIndex -lt $aTbs.Count) -and ($aTbs[$iIndex].Tag -eq 0xa0)) {
+        $aExplicitExtensions = @(Get-DerChildren -Data $RawData -Parent $aTbs[$iIndex])
+        foreach ($oExtensionSequence in $aExplicitExtensions) {
+            if ($oExtensionSequence.Tag -eq 0x30) {
+                foreach ($oExtension in @(Get-DerChildren -Data $RawData -Parent $oExtensionSequence)) {
+                    if ($oExtension.Tag -ne 0x30) { continue }
+                    $aExtensionFields = @(Get-DerChildren -Data $RawData -Parent $oExtension)
+                    if ($aExtensionFields.Count -gt 1 -and
+                        (ConvertFrom-DerObjectIdentifier -Data $RawData -Element $aExtensionFields[0]) -eq '2.5.29.27') {
+                        $bIsDeltaCRL = $true
+                        break
+                    }
+                }
+                continue
+            }
+            if ($oExtensionSequence.Tag -ne 0x30) { continue }
+            $aExtensionFields = @(Get-DerChildren -Data $RawData -Parent $oExtensionSequence)
+            if ($aExtensionFields.Count -gt 1 -and
+                (ConvertFrom-DerObjectIdentifier -Data $RawData -Element $aExtensionFields[0]) -eq '2.5.29.27') {
+                $bIsDeltaCRL = $true
+                break
+            }
+        }
+    }
 
     $aAlgorithm = @(Get-DerChildren -Data $RawData -Parent $aOuter[1])
     if ($aAlgorithm.Count -lt 1) { throw 'CRL signature algorithm is missing.' }
@@ -90,6 +115,7 @@ function Read-CertificateRevocationList {
         ThisUpdate = $oThisUpdateValue
         NextUpdate = $oNextUpdateValue
         RevokedCount = $iRevokedCount
+        IsDelta = $bIsDeltaCRL
         SignatureAlgorithm = $sSignatureAlgorithm
         SignatureStatus = $sSignatureStatus
     }

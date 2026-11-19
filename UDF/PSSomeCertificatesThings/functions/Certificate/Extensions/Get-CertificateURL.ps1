@@ -5,7 +5,8 @@ function Get-CertificateURL {
 
     .DESCRIPTION
         Extracts Certificate Distribution Point (CDP), Authority Information Access (AIA),
-        and Online Certificate Status Protocol (OCSP) URLs from an X509Certificate2 object.
+        Freshest CRL (delta CRL), and Online Certificate Status Protocol (OCSP) URLs from an
+        X509Certificate2 object.
         Uses P/Invoke to call CryptGetObjectUrl from cryptnet.dll.
 
     .PARAMETER Cert
@@ -56,6 +57,8 @@ function Get-CertificateURL {
         CDP = $null;
         AIA = $null;
         OCSP = $null;
+        DeltaCRL = @();
+        DeltaCRLExtensionPresent = $false;
     }
     $pvPara = $Cert.Handle
     # process only if Handle is not zero.
@@ -92,6 +95,26 @@ function Get-CertificateURL {
                 # free unmanaged buffer
                 [void][Runtime.InteropServices.Marshal]::FreeHGlobal($pUrlInfo)
             } else {Write-Warning "No Urls"}
+        }
+        foreach ($oExtension in $Cert.Extensions | Where-Object { $_.Oid.Value -eq '2.5.29.46' }) {
+            $URLs.DeltaCRLExtensionPresent = $true
+            $aExtensionData = [byte[]]$oExtension.RawData
+            $oExtensionRoot = Read-DerElement -Data $aExtensionData -Offset 0
+            $aPendingElements = [System.Collections.Generic.Stack[object]]::new()
+            $aPendingElements.Push($oExtensionRoot)
+            $hDeltaUrls = @{}
+            while ($aPendingElements.Count -gt 0) {
+                $oElement = $aPendingElements.Pop()
+                if ($oElement.Tag -eq 0x86 -and $oElement.Length -gt 0) {
+                    $sDeltaUrl = [System.Text.Encoding]::ASCII.GetString($aExtensionData, $oElement.ContentStart, $oElement.Length)
+                    if ($sDeltaUrl) { $hDeltaUrls[$sDeltaUrl] = $true }
+                } elseif (($oElement.Tag -band 0x20) -ne 0) {
+                    foreach ($oChild in Get-DerChildren -Data $aExtensionData -Parent $oElement) {
+                        $aPendingElements.Push($oChild)
+                    }
+                }
+            }
+            $URLs.DeltaCRL = @($hDeltaUrls.Keys | Sort-Object)
         }
         $URLs
     }
