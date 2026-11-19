@@ -1,10 +1,11 @@
+### Other
 # PSSomeCertificatesThings
 
 A PowerShell module for certificate management utilities: PKI and CA operations, CSR creation and signing, CRL retrieval, and OpenSSL helpers.
 
 ## Features
 
-### Other (13 functions)
+### Other
 
 | Function | Description |
 |----------|-------------|
@@ -16,6 +17,7 @@ A PowerShell module for certificate management utilities: PKI and CA operations,
 | `Write-CSRInfoToHost` | Displays CSR information to the console in a formatted manner |
 | `Send-CSRToCA` | Submits a CSR to a Certificate Authority using certreq |
 | `ConvertTo-Certificate` | Converts various certificate representations to X509Certificate2 object |
+| `ConvertFrom-BinaryCertificate` | Decodes DER certificate bytes into metadata including subject, issuer, validity, key size and thumbprint |
 | `Get-IssuerCertificate` | Retrieves the issuer certificate from a certificate chain |
 | `ConvertTo-DERString` | Converts byte arrays to DER (Distinguished Encoding Rules) string format |
 | `Get-CertificateURL` | Extracts CDP, AIA, and OCSP URLs from a certificate using cryptnet.dll |
@@ -24,6 +26,7 @@ A PowerShell module for certificate management utilities: PKI and CA operations,
 | `New-OpenSSLCSR` | Creates a CSR and private key using OpenSSL (v1.1) |
 | `Merge-OpenSSLPFX` | Merges a private key, certificate, and chain into a PFX file using OpenSSL |
 | `Get-CertificateTemplate` | Extracts certificate template information from an X509Certificate2 object |
+| `Install-RemoteMachineCertificate` | Imports a PFX into a remote LocalMachine\My store as non-exportable and grants key Read access to accounts or groups |
 
 ### PKI (8 functions)
 
@@ -33,9 +36,22 @@ A PowerShell module for certificate management utilities: PKI and CA operations,
 | `Get-CertificateTemplates` | Retrieves all certificate templates from Active Directory |
 | `Get-CA` | Retrieves Certificate Authorities from the AIA container in Active Directory |
 | `Get-CAEnrollmentServices` | Retrieves CA Enrollment Services from Active Directory |
+| `Get-PKIContainerCertificates` | Reads and decodes certificate values from a specified PKI Active Directory container |
 | `Get-ExpiringCAIssuedCertificates` | Retrieves certificates expiring within a window, deduplicates renewals by CN/SAN, and can return the full certificate object |
 | `Get-PublishedCertificateTemplates` | Retrieves certificate templates published on a specific CA |
 | `Get-ADCA` | Retrieves comprehensive CA information including enrollment services and templates |
+| `Test-PKIHealth` | Reports CA, DNS, certificate, template and base/delta CRL health, including CRL freshness and supported RSA signature verification |
+
+### ASN.1 / DER
+
+| Function | Description |
+|---|---|
+| `Get-AsnLength` | Decodes short- and long-form ASN.1/DER length values |
+| `Read-DerElement` | Reads a DER element and returns its tag, offsets, length and encoded bytes |
+| `Get-DerChildren` | Reads the immediate child elements of a constructed DER value |
+| `ConvertFrom-DerObjectIdentifier` | Decodes a DER object identifier to dotted-decimal notation |
+| `ConvertFrom-DerTime` | Decodes DER UTCTime and GeneralizedTime values as UTC |
+| `Read-CertificateRevocationList` | Decodes CRL issuer, update dates, revoked-entry count and signature status |
 
 ## Requirements
 
@@ -431,31 +447,13 @@ Request-ServerCertificate -ServerName "web01.example.com" `
 ### PKI Health Check
 
 ```powershell
-# Check PKI health
-function Test-PKIHealth {
-    Write-Host "=== PKI Health Check ===" -ForegroundColor Cyan
+# Returns findings for CA discovery, DNS, CA certificates, published templates,
+# and both AD-published and URL-retrieved CRLs.
+$findings = Test-PKIHealth -ExpiringWithinDays 30 -DownloadTimeoutSeconds 8
+$findings | Format-Table Status, Authority, Check, ThisUpdate, NextUpdate, Details -AutoSize
 
-    # Check CAs
-    $cas = Get-ADCA
-    Write-Host "`nCertificate Authorities: $($cas.Count)"
-    foreach ($ca in $cas) {
-        Write-Host "  $($ca.Name) on $($ca.dNSHostName)" -ForegroundColor Green
-        Write-Host "    Templates: $($ca.CertificateTemplates.Count)"
-    }
-
-    # Check Templates
-    $templates = Get-CertificateTemplates
-    Write-Host "`nCertificate Templates: $($templates.Count)"
-
-    # Check Enrollment Services
-    $services = Get-CAEnrollmentServices
-    Write-Host "`nEnrollment Services: $($services.Count)"
-    foreach ($service in $services) {
-        Write-Host "  $($service.Name) on $($service.dNSHostName)" -ForegroundColor Green
-    }
-}
-
-Test-PKIHealth
+# Focus on issues requiring attention
+$findings | Where-Object Status -in 'Critical', 'Warning'
 ```
 
 ### Batch Certificate Export

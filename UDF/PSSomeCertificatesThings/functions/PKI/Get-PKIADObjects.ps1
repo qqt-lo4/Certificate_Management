@@ -42,85 +42,12 @@ function Get-PKIADObjects {
         $sForestDN = $oForest.distinguishedName
         $sPKSBase = "CN=Public Key Services,CN=Services,CN=Configuration,$sForestDN"
 
-        # Helper: decode a binary certificate into readable properties
-        function ConvertFrom-BinaryCertificate {
-            Param([byte[]]$Bytes, [string]$Source = '')
-            try {
-                $oCert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2(,$Bytes)
-                return [PSCustomObject][ordered]@{
-                    source           = $Source
-                    subject          = $oCert.Subject
-                    issuer           = $oCert.Issuer
-                    notBefore        = $oCert.NotBefore
-                    notAfter         = $oCert.NotAfter
-                    serialNumber     = $oCert.SerialNumber
-                    thumbprint       = $oCert.Thumbprint
-                    signatureAlgorithm = $oCert.SignatureAlgorithm.FriendlyName
-                    keySize          = $oCert.PublicKey.Key.KeySize
-                    version          = $oCert.Version
-                    hasPrivateKey    = $oCert.HasPrivateKey
-                }
-            } catch {
-                Write-Verbose "Failed to decode certificate from $Source : $_"
-                return $null
-            }
-        }
-
-        # Helper: query a container and return decoded results
-        function Get-PKIContainerCertificates {
-            Param(
-                [string]$ContainerCN,
-                [string]$Filter = '(objectClass=certificationAuthority)',
-                [string]$CertProperty = 'cACertificate',
-                [string]$SourceLabel
-            )
-
-            $sDN = "LDAP://$sForestName/CN=$ContainerCN,$sPKSBase"
-            $oSearcher = New-Object System.DirectoryServices.DirectorySearcher([ADSI]$sDN)
-            $oSearcher.Filter = $Filter
-            $oSearcher.PageSize = 100
-            $oSearcher.PropertiesToLoad.AddRange(@('name', 'cn', $CertProperty, 'whenCreated', 'whenChanged'))
-
-            $aResults = @()
-            try {
-                foreach ($oResult in $oSearcher.FindAll()) {
-                    $sName = [string]$oResult.Properties['cn'][0]
-                    $aCertBytes = $oResult.Properties[$CertProperty]
-
-                    if ($aCertBytes -and $aCertBytes.Count -gt 0) {
-                        foreach ($certData in $aCertBytes) {
-                            $oCertInfo = ConvertFrom-BinaryCertificate -Bytes ([byte[]]$certData) -Source "$SourceLabel/$sName"
-                            if ($oCertInfo) { $aResults += $oCertInfo }
-                        }
-                    } else {
-                        # Objet sans certificat, retourner au moins le nom
-                        $aResults += [PSCustomObject][ordered]@{
-                            source    = "$SourceLabel/$sName"
-                            subject   = $null
-                            issuer    = $null
-                            notBefore = $oResult.Properties['whencreated'][0]
-                            notAfter  = $null
-                            serialNumber = $null
-                            thumbprint = $null
-                            signatureAlgorithm = $null
-                            keySize   = $null
-                            version   = $null
-                            hasPrivateKey = $null
-                        }
-                    }
-                }
-            } catch {
-                Write-Verbose "Failed to query $ContainerCN : $_"
-            }
-            return $aResults
-        }
-
         $aAllResults = @()
 
         # --- AIA: Intermediate CA certificates ---
         if ($Type -in @('All', 'AIA')) {
             Write-Verbose "Querying AIA..."
-            $aAIA = Get-PKIContainerCertificates -ContainerCN 'AIA' -SourceLabel 'AIA'
+            $aAIA = Get-PKIContainerCertificates -ContainerDN "LDAP://$sForestName/CN=AIA,$sPKSBase" -SourceLabel 'AIA'
             $aAllResults += $aAIA
         }
 
@@ -145,7 +72,7 @@ function Get-PKIADObjects {
         # --- Root CAs ---
         if ($Type -in @('All', 'RootCA')) {
             Write-Verbose "Querying Root CAs from AD..."
-            $aRootCAs = Get-PKIContainerCertificates -ContainerCN 'Certification Authorities' -SourceLabel 'Root CA'
+            $aRootCAs = Get-PKIContainerCertificates -ContainerDN "LDAP://$sForestName/CN=Certification Authorities,$sPKSBase" -SourceLabel 'Root CA'
             $aAllResults += $aRootCAs
 
             # Si aucune Root CA dans AD, chercher dans le magasin local
@@ -156,7 +83,7 @@ function Get-PKIADObjects {
                 $aAIACerts = if ($aAllResults | Where-Object { $_.source -like 'AIA/*' }) {
                     $aAllResults | Where-Object { $_.source -like 'AIA/*' }
                 } else {
-                    Get-PKIContainerCertificates -ContainerCN 'AIA' -SourceLabel 'AIA'
+                    Get-PKIContainerCertificates -ContainerDN "LDAP://$sForestName/CN=AIA,$sPKSBase" -SourceLabel 'AIA'
                 }
                 $aIssuers = @($aAIACerts | Where-Object { $_.issuer } | ForEach-Object { $_.issuer } | Sort-Object -Unique)
 
@@ -179,6 +106,7 @@ function Get-PKIADObjects {
                         keySize            = $oRootCert.PublicKey.Key.KeySize
                         version            = $oRootCert.Version
                         hasPrivateKey      = $oRootCert.HasPrivateKey
+                        rawData             = [byte[]]$oRootCert.RawData
                     }
                 }
             }
@@ -187,7 +115,7 @@ function Get-PKIADObjects {
         # --- KRA: Key Recovery Agents ---
         if ($Type -in @('All', 'KRA')) {
             Write-Verbose "Querying KRA..."
-            $aKRA = Get-PKIContainerCertificates -ContainerCN 'KRA' `
+            $aKRA = Get-PKIContainerCertificates -ContainerDN "LDAP://$sForestName/CN=KRA,$sPKSBase" `
                 -Filter '(objectClass=msPKI-PrivateKeyRecoveryAgent)' `
                 -CertProperty 'userCertificate' -SourceLabel 'KRA'
             $aAllResults += $aKRA
@@ -212,15 +140,26 @@ function Get-PKIADObjects {
 
                     $bHasCRL = ($oResult.Properties['certificaterevocationlist'] -and $oResult.Properties['certificaterevocationlist'].Count -gt 0)
                     $bHasDelta = ($oResult.Properties['deltarevocationlist'] -and $oResult.Properties['deltarevocationlist'].Count -gt 0)
+                    $aCRLData = [System.Collections.Generic.List[byte[]]]::new()
+                    foreach ($oCRLValue in $oResult.Properties['certificaterevocationlist']) {
+                        $aCRLData.Add([byte[]]$oCRLValue)
+                    }
+                    $aDeltaCRLData = [System.Collections.Generic.List[byte[]]]::new()
+                    foreach ($oCRLValue in $oResult.Properties['deltarevocationlist']) {
+                        $aDeltaCRLData.Add([byte[]]$oCRLValue)
+                    }
 
                     $aAllResults += [PSCustomObject][ordered]@{
                         source      = "CDP/$sCAName"
+                        distinguishedName = $sDN
                         subject     = $sName
                         issuer      = $sCAName
                         notBefore   = $oResult.Properties['whencreated'][0]
                         notAfter    = $oResult.Properties['whenchanged'][0]
                         hasCRL      = $bHasCRL
                         hasDeltaCRL = $bHasDelta
+                        CRLData     = $aCRLData.ToArray()
+                        DeltaCRLData = $aDeltaCRLData.ToArray()
                     }
                 }
             } catch {

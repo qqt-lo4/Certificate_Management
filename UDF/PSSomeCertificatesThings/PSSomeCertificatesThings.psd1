@@ -5,7 +5,7 @@
     RootModule        = 'PSSomeCertificatesThings.psm1'
 
     # Version number of this module
-    ModuleVersion     = '1.0.0'
+    ModuleVersion     = '1.1.0'
 
     # ID used to uniquely identify this module
     GUID              = '7b3e52d1-4a96-4f08-b1c3-9d8e2a7f6c45'

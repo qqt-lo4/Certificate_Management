@@ -39,6 +39,7 @@ function Get-ColumnFormat {
         - Format: Format string for the data (e.g., "N2" for numbers, "yyyy-MM-dd" for dates)
         - Width: Fixed width for the column in characters
         - AutoWidth: Boolean flag to allow automatic width calculation
+        - CellColor: Scriptblock returning a ConsoleColor for an individual cell
 
     .OUTPUTS
         System.Collections.Hashtable[]
@@ -130,6 +131,9 @@ function Get-ColumnFormat {
                 }
                 if ($AddColumnnFormat[$sPropertyName].AutoWidth) {
                     $hColumnFormat.AutoWidth = $AddColumnnFormat[$sPropertyName].AutoWidth
+                }
+                if ($AddColumnnFormat[$sPropertyName].CellColor) {
+                    $hColumnFormat.CellColor = $AddColumnnFormat[$sPropertyName].CellColor
                 }
             }
         }

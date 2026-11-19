@@ -35,7 +35,7 @@
         Hashtable keys supported:
         - n/name/l/label: Column header name
         - e/expression: Property name or script block to calculate value
-        - Additional formatting properties (width, alignment, etc.)
+        - Additional formatting properties (width, AutoWidth, CellColor, etc.)
 
     .PARAMETER HideHeader
         When specified, suppresses the header row from the output. Useful for data-only display
@@ -212,6 +212,26 @@
                 $iMaxTableWidth += $column.Width
             }
         }
+
+        function Format-TableCell {
+            Param(
+                [Parameter(Mandatory)]$Object,
+                [Parameter(Mandatory)]$Column
+            )
+            $sPropertyName = $Column.Name
+            $sValue = if ($null -eq $Object.$sPropertyName) { '' } else { $Object.$sPropertyName.ToString() }
+            if ($sValue.Length -gt $Column.Width) {
+                $sValue = $sValue.Substring(0, $Column.Width - 1) + "…"
+            }
+            $oCellColor = if ($Column.CellColor) { & $Column.CellColor $sValue $Object }
+            if ($null -eq $oCellColor) {
+                return ("{0,$($Column.Width * $(if ($Column.Alignment -eq 'left') { -1 } else { 1 }))}" -f $sValue)
+            }
+            $sPadding = ' ' * [Math]::Max(0, $Column.Width - $sValue.Length)
+            $sColoredValue = "$([char]27)[$(Convert-ConsoleColorToInt $oCellColor)m$sValue$([char]27)[39m"
+            if ($Column.Alignment -eq 'right') { return $sPadding + $sColoredValue }
+            return $sColoredValue + $sPadding
+        }
         $iMaxTableWidth += ($aColumnFormat.Count - 1)
         if (($iMaxTableWidth + $iColumnAutoWidth) -le $ContentMaxWidth) {
             $iMaxTableWidth += $iColumnAutoWidth
@@ -275,12 +295,7 @@
                 for($i = 0; $i -lt $Object.PSObject.Properties.Name.Count; $i++) {
                     $sPropertyName = $Object.PSObject.Properties.Name[$i]
                     $column = $hColumns[$sPropertyName]
-                    $iAlign = if ($column.Alignment -eq "left") { -1 } else { 1 }
-                    $sValue = if ($null -eq $Object.$sPropertyName) { '' } else { $Object.$sPropertyName.ToString() }
-                    if ($sValue.Length -gt $column.width) {
-                        $sValue = $sValue.SubString(0, $column.width - 1) + "…"
-                    } 
-                    $sLine += ("{0,$($column.width * $iAlign)}" -f $sValue) 
+                    $sLine += Format-TableCell -Object $Object -Column $column
                     if ($i -lt ($Object.PSObject.Properties.Name.Count - 1)) {
                         $sLine += " "
                     }
@@ -288,12 +303,7 @@
             } else {
                 $sPropertyName = $Object.PSObject.Properties.Name
                 $column = $hColumns[$sPropertyName]
-                $iAlign = if ($column.Alignment -eq "left") { -1 } else { 1 }     
-                $sValue = if ($null -eq $Object.$sPropertyName) { '' } else { $Object.$sPropertyName.ToString() }
-                if ($sValue.Length -gt $column.width) {
-                    $sValue = $sValue.SubString(0, $column.width - 1) + "…"
-                }
-                $sLine += ("{0,$($column.width * $iAlign)}" -f $sValue) 
+                $sLine += Format-TableCell -Object $Object -Column $column
             }
             $aResultLine += $sLine
         }

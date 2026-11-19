@@ -13,6 +13,9 @@ function Get-CRL {
     .PARAMETER DownloadTimeout
         Timeout in seconds for the download operation. Default: 15.
 
+    .PARAMETER ReturnRawData
+        Return the downloaded DER bytes instead of the platform CRL object.
+
     .OUTPUTS
         [Security.Cryptography.X509Certificates.X509CRL2]. The downloaded and parsed CRL object, or error message if download fails.
 
@@ -29,67 +32,80 @@ function Get-CRL {
     Param(
         [Parameter(Mandatory, Position = 0)]
         [string]$URL,
-        [int]$DownloadTimeout = 15
+        [int]$DownloadTimeout = 15,
+        [switch]$ReturnRawData
     )
     Begin {
-        function Test-Type {
-            Param(
-                [Parameter(Mandatory, Position = 0)]
-                [ValidatePattern("^[a-zA-Z_.0-9-]+$")]
-                [string]$TypeName
-            )
-            try {
-                Invoke-Expression -Command "[$TypeName] -as [type]" | Out-Null
-                return $true
-            } catch {
-                return $false
-            }
-        }
-
         $iTimeout = $DownloadTimeout * 1000
 
-        if (-not (Test-Type "Cryptnet.Func_CryptRetrieveObjectByUrl")) {
-            $cryptnetsignature = @"
-            [DllImport("cryptnet.dll", CharSet = CharSet.Auto, SetLastError = true)]
-            public static extern bool CryptRetrieveObjectByUrl(
-                //[MarshalAs(UnmanagedType.LPStr)]
-                string pszUrl,
-                //[MarshalAs(UnmanagedType.LPStr)]
-                int pszObjectOid,
-                int dwRetrievalFlags,
-                int dwTimeout,
-                ref IntPtr ppvObject,
-                IntPtr hAsyncRetrieve,
-                IntPtr pCredentials,
-                IntPtr pvVerify,
-                IntPtr pAuxInfo
-            );
-"@
-            Add-Type -MemberDefinition $cryptnetsignature -Namespace "Cryptnet" -Name "Func_CryptRetrieveObjectByUrl"
+        if (-not ('PSSomeCertificatesThings.Native.Cryptnet' -as [type])) {
+            $sNativeSignature = @"
+using System;
+using System.Runtime.InteropServices;
+
+namespace PSSomeCertificatesThings.Native
+{
+    public static class Cryptnet
+    {
+        [StructLayout(LayoutKind.Sequential)]
+        public struct CRL_CONTEXT
+        {
+            public uint dwCertEncodingType;
+            public IntPtr pbCrlEncoded;
+            public uint cbCrlEncoded;
+            public IntPtr pCrlInfo;
+            public IntPtr hCertStore;
         }
 
+        [DllImport("cryptnet.dll", EntryPoint = "CryptRetrieveObjectByUrlW", CharSet = CharSet.Unicode, SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool CryptRetrieveObjectByUrl(
+            string pszUrl,
+            IntPtr pszObjectOid,
+            uint dwRetrievalFlags,
+            uint dwTimeout,
+            out IntPtr ppvObject,
+            IntPtr hAsyncRetrieve,
+            IntPtr pCredentials,
+            IntPtr pvVerify,
+            IntPtr pAuxInfo);
+
+        [DllImport("crypt32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool CertFreeCRLContext(IntPtr pCrlContext);
+    }
+}
+"@
+            Add-Type -TypeDefinition $sNativeSignature
+        }
     }
     Process {
         $ppvObject = [IntPtr]::Zero
-        if ([PKI.EnterprisePKI.Cryptnet]::CryptRetrieveObjectByUrl($URL,2,4,$iTimeout,[ref]$ppvObject,
+        if ([PSSomeCertificatesThings.Native.Cryptnet]::CryptRetrieveObjectByUrl($URL,[IntPtr]2,4,$iTimeout,[ref]$ppvObject,
             [IntPtr]::Zero,
             [IntPtr]::Zero,
             [IntPtr]::Zero,
             [IntPtr]::Zero)
         ) {
-            $crlContext = [Runtime.InteropServices.Marshal]::PtrToStructure($ppvObject,[Type][PKI.EnterprisePKI.Crypt32+CRL_CONTEXT])
-            $rawData = New-Object byte[] -ArgumentList $crlContext.cbCrlEncoded
-            [Runtime.InteropServices.Marshal]::Copy($crlContext.pbCrlEncoded,$rawData,0,$rawData.Length)
-            $crl = New-Object Security.Cryptography.X509Certificates.X509CRL2 (,$rawData)
-            Write-Debug "CRL: $($crl.Issuer)"
-            $crl
-            [void][PKI.EnterprisePKI.Crypt32]::CertFreeCRLContext($ppvObject)
+            $oCRLContext = [Runtime.InteropServices.Marshal]::PtrToStructure(
+                $ppvObject, [type][PSSomeCertificatesThings.Native.Cryptnet+CRL_CONTEXT])
+            $rawData = New-Object byte[] -ArgumentList $oCRLContext.cbCrlEncoded
+            [Runtime.InteropServices.Marshal]::Copy($oCRLContext.pbCrlEncoded,$rawData,0,$rawData.Length)
+            try {
+                if ($ReturnRawData) {
+                    Write-Output -NoEnumerate $rawData
+                } else {
+                    $crl = New-Object Security.Cryptography.X509Certificates.X509CRL2 (,$rawData)
+                    Write-Debug "CRL: $($crl.Issuer)"
+                    $crl
+                }
+            } finally {
+                [void][PSSomeCertificatesThings.Native.Cryptnet]::CertFreeCRLContext($ppvObject)
+            }
         } else {
             $hresult = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
-            Write-Debug "URL error: $hresult"
-            $CertRequest = New-Object -ComObject CertificateAuthority.Request
-            $CertRequest.GetErrorMessageText($hresult,0)
-            [PKI.Utils.CryptographyUtils]::ReleaseCom($CertRequest)
+            $oError = New-Object System.ComponentModel.Win32Exception($hresult)
+            throw "CRL retrieval failed for '$URL': $($oError.Message) (Win32 $hresult)."
         }
     }
 }

@@ -47,7 +47,9 @@ function Get-CertificateURL {
         int pvReserved
     );
 "@
-    Add-Type -MemberDefinition $signature -Namespace PKI -Name Cryptnet
+    if (-not ('PKI.Cryptnet' -as [type])) {
+        Add-Type -MemberDefinition $signature -Namespace PKI -Name Cryptnet
+    }
 
     # create synthetic object to store resulting URLs
     $URLs = New-Object psobject -Property @{

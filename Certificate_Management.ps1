@@ -185,6 +185,15 @@ Changed:
 - Added a SQL Server deployment prompt for private-key exportability. The default keeps the
     installed machine key non-exportable; users can explicitly allow export when required.
     The SQL service account retains read access in either case.
+- Added a PKI health report covering AD CA inventory, DNS, CA certificate validity, published
+    templates, CRLs in AD, CRL distribution point downloads, expiry windows and RSA signatures.
+    Healthy status cells are green and Critical status cells red; NotApplicable stays uncolored.
+- The health report orders Critical, Warning, Healthy and NotApplicable findings, and colors
+    Warning status cells yellow.
+- Added "Push a certificate to a remote computer": imports a PFX into LocalMachine\My with
+    private-key export disabled, adds intermediates to LocalMachine\CA, and grants Read access
+    to one or more target-resolvable accounts or groups. Root certificates are not trusted.
+- Added target-side identity resolution and confirmation before the remote certificate import.
 
 #>
 #endregion Release notes
@@ -1595,6 +1604,75 @@ function Show-ExpiringCertificateDetails_CLI {
     }
 }
 
+function Show-PKIHealth_CLI {
+    try {
+        $aFindings = @(Test-PKIHealth -ErrorAction Stop)
+    } catch {
+        Write-Warning "Could not run the PKI health report: $_"
+        return
+    }
+    if ($aFindings.Count -eq 0) {
+        Write-Host 'The PKI health report returned no checks.' -ForegroundColor Yellow
+        return
+    }
+    $hStatusPriority = @{ Critical = 0; Warning = 1; Healthy = 2; NotApplicable = 3 }
+    $aFindings = @($aFindings | Sort-Object `
+        @{ Expression = { if ($hStatusPriority.ContainsKey($_.Status)) { $hStatusPriority[$_.Status] } else { 4 } } }, `
+        Authority, Check)
+
+    $oOverallFinding = $aFindings | Where-Object Check -eq 'Overall status' | Select-Object -First 1
+    $aFindings = @($aFindings | Where-Object Check -ne 'Overall status')
+    $aCritical = @($aFindings | Where-Object Status -eq 'Critical').Count
+    $aWarnings = @($aFindings | Where-Object Status -eq 'Warning').Count
+    $sOverallStatus = if ($oOverallFinding) { $oOverallFinding.Status } elseif ($aCritical) { 'Critical' } elseif ($aWarnings) { 'Warning' } else { 'Healthy' }
+    Write-Host ("PKI health: {0}; {1} critical, {2} warning finding(s)." -f $sOverallStatus, $aCritical, $aWarnings) `
+        -ForegroundColor $(switch ($sOverallStatus) { 'Critical' { 'Red' } 'Warning' { 'Yellow' } default { 'Green' } })
+
+    while ($true) {
+        $oSelection = Select-CLIDialogObjectInArray -Objects $aFindings `
+            -SelectedColumns @(
+                @{ n = 'Status'; e = { $_.Status }; CellColor = {
+                    param($Value, $Row)
+                    switch ($Value) {
+                        'Healthy' { [System.ConsoleColor]::Green }
+                        'Warning' { [System.ConsoleColor]::Yellow }
+                        'Critical' { [System.ConsoleColor]::Red }
+                    }
+                } }
+                'Authority', 'Check',
+                @{ n = 'NextUpdate'; e = { $_.NextUpdate } },
+                @{ n = 'Details'; e = { $_.Details }; AutoWidth = $true }
+            ) `
+            -SelectHeaderMessage 'PKI health findings (the report is not recalculated when returning)' `
+            -OtherMenuItems @(
+                New-CLIDialogButton -Text '&Export CSV' -Other -Object { 'ExportReport' }
+                New-CLIDialogButton -Text '&Exit' -Exit
+            ) -ItemsPerPage 12 -Space:$false -AllowBack -HeaderTextInSeparator
+
+        if (Test-DialogAction $oSelection -Action 'Exit') { return $oSelection }
+        if ($oSelection.PSTypeNames -and $oSelection.PSTypeNames[0] -eq 'DialogResult.Action.Other') {
+            if ($oSelection.Value -eq 'ExportReport') {
+                $sOutputDir = Get-ScriptDir -OutputDir
+                New-Item -Path $sOutputDir -ItemType Directory -Force | Out-Null
+                $sReportPath = Join-Path $sOutputDir ("PKIHealth_{0}.csv" -f (Get-Date -Format 'yyyyMMdd-HHmmss'))
+                $aFindings | Select-Object Status, Authority, Check, Details, URL, ThisUpdate, NextUpdate |
+                    Export-Csv -Path $sReportPath -NoTypeInformation -Encoding UTF8 -Delimiter ';'
+                Write-Host "Report saved to: $sReportPath" -ForegroundColor Cyan
+            }
+            continue
+        }
+        if ($oSelection.PSTypeNames -and $oSelection.PSTypeNames[0] -eq 'DialogResult.Value') {
+            Write-Host ''
+            foreach ($sProperty in @('Status', 'Authority', 'Check', 'Details', 'URL', 'ThisUpdate', 'NextUpdate')) {
+                Write-Field -Name $sProperty -Value $oSelection.Value.$sProperty
+            }
+            Write-Host ''
+            continue
+        }
+        return
+    }
+}
+
 function Read-PFXConversionOptions {
     Param(
         [switch]$AllowBack
@@ -2189,6 +2267,97 @@ function Get-DeploymentPfx_CLI {
         PfxPath     = $sPfxPath
         Password    = $ssPfxPwd
         Certificate = $oNewCert
+    }
+}
+
+function Push-CertificateToRemoteMachine_CLI {
+    # Imports a certificate into the target's LocalMachine\My store without configuring an application.
+    # The private key is always imported as non-exportable and read access is granted to the entered identities.
+    $sServerRegex = "(" + (Get-DNSRegex -FullLine) + ")|(" + (Get-IPRegex -FullLine) + ")"
+    $hServerParams = @{
+        Header           = "Computer to receive the certificate"
+        PropertyName     = "Computer"
+        ValidationMethod = $sServerRegex
+        ErrorMessage     = "Please enter a valid computer name or IP address"
+        AllowCancel      = $true
+    }
+    if ($Global:CertificatePushServer) { $hServerParams.DefaultValue = $Global:CertificatePushServer }
+    $oServer = Read-CLIDialogValidatedValue @hServerParams
+    if (Test-DialogAction $oServer) { return }
+    $sServer = ([string]$oServer.Value).Trim()
+    $Global:CertificatePushServer = $sServer
+
+    if ($Global:CertificatePushSession -and ($Global:CertificatePushSession.ComputerName -ne $sServer)) {
+        Remove-PSSession -Session $Global:CertificatePushSession -ErrorAction SilentlyContinue
+        $Global:CertificatePushSession = $null
+    }
+    $oCredential = if ($Global:CertificatePushCredential) {
+        $Global:CertificatePushCredential
+    } elseif ($Global:MSSqlCredential) {
+        $Global:MSSqlCredential
+    } elseif ($Global:RDSCredential) {
+        $Global:RDSCredential
+    } else {
+        $Global:PKICredential
+    }
+    $oConnect = Connect-CLIDialogPSSession -ComputerName $sServer -Credential $oCredential `
+        -Session $Global:CertificatePushSession -Message "Administrator credentials for $sServer" -AllowCancel
+    if (Test-DialogAction $oConnect) { return }
+    $Global:CertificatePushCredential = $oConnect.Credential
+    $Global:CertificatePushSession = $oConnect.Session
+
+    $oDeployment = Get-DeploymentPfx_CLI -ServerName $sServer -OpenSSLPath $OpenSSLPath
+    if (Test-DialogAction $oDeployment) { return $oDeployment }
+    if (-not $oDeployment) { return }
+    try {
+        $aReadAccessAccounts = Read-CLIDialogArray -Header "Accounts and groups to grant private-key Read access" `
+            -TextBoxHeader "Identity" -HintMessage "Enter one target-resolvable account or group per line (for example DOMAIN\service$, DOMAIN\CertificateReaders, or IIS AppPool\MyPool)." `
+            -VisibleLines 4 -AllowCancel
+        if (Test-DialogAction $aReadAccessAccounts) { return $aReadAccessAccounts }
+        $aReadAccessAccounts = @($aReadAccessAccounts | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ } | Select-Object -Unique)
+        if ($aReadAccessAccounts.Count -eq 0) {
+            Write-Host 'Enter at least one account or group.' -ForegroundColor Yellow
+            return
+        }
+
+        Write-Host ""
+        Write-Host "---------------------- Remote certificate push ----------------------" -ForegroundColor Blue
+        Write-Host ("Computer`t`t: {0}" -f $sServer)
+        Write-Host ("Certificate`t: {0}" -f $oDeployment.Certificate.Subject)
+        Write-Host ("Thumbprint`t: {0}" -f $oDeployment.Certificate.Thumbprint)
+        Write-Host ("Store`t`t: LocalMachine\My")
+        Write-Host ("Private key`t: non-exportable")
+        Write-Host ("Read access`t: {0}" -f ($aReadAccessAccounts -join ', '))
+        Write-Host "---------------------------------------------------------------------" -ForegroundColor Blue
+        $sConfirm = Invoke-YesNoCLIDialog -YN -Vertical -Recommended No `
+            -Message "Push this certificate to $sServer and grant the listed identities Read access to its private key?" `
+            -YesButtonText "&Push certificate" -NoButtonText "&Cancel"
+        if ($sConfirm -ne 'Yes') { return }
+
+        $oResult = try {
+            Install-RemoteMachineCertificate -Session $Global:CertificatePushSession `
+                -PfxPath $oDeployment.PfxPath -Password $oDeployment.Password `
+                -ReadAccessAccount $aReadAccessAccounts -ErrorAction Stop
+        } catch {
+            [PSCustomObject]@{ Success = $false; Error = "$_"; ReadAccess = @() }
+        }
+        if (-not $oResult.Success) {
+            Write-Host "Certificate push failed: $($oResult.Error)" -ForegroundColor Red
+            return
+        }
+        Write-Host "Certificate installed in $($oResult.Store) on $sServer." -ForegroundColor Green
+        Write-Host "Subject: $($oResult.Subject)"
+        Write-Host "Thumbprint: $($oResult.Thumbprint)"
+        Write-Host "Private-key export: disabled" -ForegroundColor Green
+        foreach ($oAccess in $oResult.ReadAccess) {
+            $sAccessStatus = if ($oAccess.Status -eq 'AlreadyGranted') { 'already granted' } else { 'granted' }
+            Write-Host ("Read access {0}: {1} ({2})" -f $sAccessStatus, $oAccess.Account, $oAccess.SID) -ForegroundColor Green
+        }
+        Write-Host ""
+    } finally {
+        if ($oDeployment.Certificate -is [System.Security.Cryptography.X509Certificates.X509Certificate2]) {
+            $oDeployment.Certificate.Dispose()
+        }
     }
 }
 
@@ -3275,8 +3444,10 @@ $Menu = New-Menu -Text "What do you want to do?" -Content @(
         New-MenuItem -Text "&Create PFX" -Content { New-PFX_CLI -OpenSSLPath $OpenSSLPath | Out-Null }
     ) -OtherMenuItems $aOtherMenuItems -SeparatorColor Blue
     New-MenuItem -Text "&View a certificate" -Content { Show-Certificate_CLI -OpenSSLPath $OpenSSLPath }
+    New-MenuItem -Text "&Push a certificate to a remote computer" -Content { Push-CertificateToRemoteMachine_CLI }
     New-MenuItem -Text "E&xport / Convert certificate" -Content { Convert-Certificate_CLI -OpenSSLPath $OpenSSLPath | Out-Null }
     New-MenuItem -Text "Certificates expiring soon" -Content { Show-ExpiringCertificates_CLI }
+    New-MenuItem -Text "&PKI health report" -Content { Show-PKIHealth_CLI }
     New-Menu -Text "Change the certificate of an application se&rver" -Content @(
         New-MenuItem -Text "&RDS server" -Content { Set-RDSCertificate_CLI | Out-Null }
         New-MenuItem -Text "&SQL Server" -Content { Set-MSSqlCertificate_CLI }

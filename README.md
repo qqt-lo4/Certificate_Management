@@ -48,10 +48,12 @@ The main menu offers:
 2. **Sign a provided CSR** - Sign a CSR received from someone else
 3. **Advanced certificate generation** - Individual steps for partial workflows
 4. **View a certificate** - Display the details of a certificate
-5. **Export / Convert certificate** - Convert a PFX to other formats
-6. **Change the certificate of an application server** - **RDS server** or **SQL Server**; SQL Server private-key export is disabled by default and can be explicitly allowed during deployment
-7. **Certificates expiring soon** - Set report parameters, then select a certificate to view its details and CA request metadata before choosing renewal, CSR-only generation, Windows viewer or OpenSSL. Export the list as CSV; returning from a detail view reuses the loaded report without querying the PKI again.
-8. **Settings** - Configure selection and report filters
+5. **Push a certificate to a remote computer** - Import a non-exportable PFX into the remote LocalMachine\My store and grant key read access to one or more accounts or groups
+6. **Export / Convert certificate** - Convert a PFX to other formats
+7. **Change the certificate of an application server** - **RDS server** or **SQL Server**; SQL Server private-key export is disabled by default and can be explicitly allowed during deployment
+8. **Certificates expiring soon** - Set report parameters, then select a certificate to view its details and CA request metadata before choosing renewal, CSR-only generation, Windows viewer or OpenSSL. Export the list as CSV; returning from a detail view reuses the loaded report without querying the PKI again.
+9. **PKI health report** - Check CA discovery, DNS, CA certificate validity, published templates, CRLs in AD and CRL distribution point endpoints. Findings can be exported to CSV.
+10. **Settings** - Configure selection and report filters
 
 NetScaler checks are available under **Change the certificate of an application server**. They require the ADC HTTPS management URL and a read-only Nitro API credential; the script discovers candidate SSL vServers, SNI bindings and explicit Content Switching host rules.
 
