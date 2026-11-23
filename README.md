@@ -3,7 +3,7 @@
 <div>
   <img src="icon.png" alt="icon" width="128" align="left" style="margin-right: 16px;" />
 
-  A PowerShell CLI tool for managing X.509 certificates: CSR generation with OpenSSL, submission to a Windows PKI (ADCS), certificate retrieval and PFX creation, certificate viewing (files, HTTPS and SQL Server endpoints), and certificate renewal on RDS and SQL Server servers. Features an interactive wizard with back navigation for a guided experience.
+   A PowerShell CLI tool for managing X.509 certificates: CSR generation with OpenSSL, submission to a Windows PKI (ADCS), certificate retrieval and PFX creation, certificate viewing (files, HTTPS, SQL Server and RDP endpoints), and certificate renewal on RDS and SQL Server servers. Features an interactive wizard with back navigation for a guided experience.
 
   ![PowerShell](https://img.shields.io/badge/PowerShell-5.1%2B-blue)
   ![Windows](https://img.shields.io/badge/Windows-10%2F11-0078D6)
@@ -21,7 +21,7 @@
 - **Advanced Mode**: Individual access to each step (CSR, submit, issue, retrieve, PFX)
 - **Sign a Provided CSR**: Review a CSR sent by someone else, choose CA and template, get the signed certificate and chain (no PFX: the private key stays with the requester)
 - **Export / Convert**: Convert a PFX to PFX, PEM (combined or separate) or DER; an unencrypted private key always ends up in a password-protected ZIP
-- **Certificate Viewer**: Inspect a certificate from a file (PEM, DER, P7B, PFX), an HTTPS URL, a host or a SQL Server instance, with chain check, then create a new certificate from it
+- **Certificate Viewer**: Inspect a certificate from a file (PEM, DER, P7B, PFX), an HTTPS or RDP URL, a host or a SQL Server instance, with chain check, then create a new certificate from it
 - **RDS Certificate Deployment**: Push a PFX to a Remote Desktop Services server (Connection Broker roles or standalone RDP listener)
 - **SQL Server Certificate Renewal**: Renew the TLS certificate of a SQL Server instance, prepared without interruption, restart now or later
 - **Expiring Certificates**: Browse certificates approaching expiration, start a prefilled PKI request, or export the list to an Excel-friendly CSV
@@ -63,10 +63,11 @@ The expiry report uses `ReportTemplateFilter`, `ReportTemplateExcludeFilter` and
 
 1. **Source** - Choose a working folder, then one of its certificate files (opened directly when the folder holds only one), or **Other source** to enter:
    - a file path or an HTTPS URL
-   - `host[:port]` (port 443 by default): HTTPS and SQL Server are tried at the same time, the first answer wins
+   - `rdp://host[:port]` (port 3389 by default): RDP
+   - `host[:port]` (port 443 by default): HTTPS, SQL Server and RDP are tried at the same time, the first answer wins; use `host:3389` for the default RDP port
    - `server\instance` (the port is asked to the SQL Server Browser) or `server,port`: SQL Server
 
-   For a server, the certificate it presents to its clients is shown (no login needed). Every list offers **Back** and **Exit**
+   For a server, the certificate it presents to its clients is shown (no login needed). RDP uses TLS negotiation, including CredSSP, without sending credentials; standard RDP security without TLS does not present a TLS certificate. Every list offers **Back** and **Exit**
    - Supported files: PEM (bundles included), DER/CER/CRT, P7B, PFX/P12 (the password is asked when needed)
    - When the source holds several certificates, choose the one to view (listed from the leaf to the root)
 2. **Details** - Subject, SAN (one per line, grouped by type), issuer, serial number, validity (days left), SHA1 / SHA256 fingerprints, public key, signature algorithm, key usages, basic constraints, template, SKI / AKI, CDP / AIA / OCSP URLs, private key presence
@@ -152,6 +153,24 @@ The `input/config.json` file allows filtering CA and template lists using regex 
 These filters can also be edited from the **Settings** menu.
 
 ## Release Notes
+
+### 2.12 (2026-11-23)
+- Added RDP listener certificate inspection: `host:3389` tries HTTPS, SQL Server and RDP concurrently, while `rdp://host[:port]` selects RDP directly (port 3389 by default). The certificate is read during RDP TLS negotiation without sending credentials.
+- Refactored PKI health checks and improved base / Delta CRL discovery, publication-window monitoring and signature verification. CRL dates are shown in local time.
+
+### 2.11 (2026-11-18)
+- Added a PKI health report for AD CA inventory, DNS, CA certificates, templates, CRLs, publication windows and RSA signatures.
+- Added remote certificate push to LocalMachine\My with private-key export disabled, intermediate certificates installed in LocalMachine\CA, and target-side account or group resolution before granting key access.
+- Added an explicit SQL Server private-key exportability option; the default keeps the installed key non-exportable.
+
+### 2.10 (2026-11-16)
+- Added an **In PFX** indicator based on the actual PFX contents, independent of private-key presence.
+- Improved PFX viewing and certificate cleanup, and fixed the certificate source selector when no working folder contains certificate files.
+
+### 2.9 (2026-11-13)
+- Added per-run parameters for the expiring-certificate report and online CRL/OCSP revocation checks; inconclusive results remain visible as Unknown.
+- Expanded certificate details with CA request metadata and renewal / CSR / viewer actions, while reusing the loaded report for navigation and CSV export.
+- Improved report table layout and narrow-console handling, and fixed revocation details and Exit behavior.
 
 ### 2.8
 - Added an expiring-certificate report with template inclusion/exclusion, template-validity-bounded history lookup, renewal deduplication by CN/SAN, a prefilled PKI request workflow and Excel-friendly CSV export

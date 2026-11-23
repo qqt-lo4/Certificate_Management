@@ -196,6 +196,7 @@ Changed:
 - Added target-side identity resolution and confirmation before the remote certificate import.
 
 2.12 (2026-11-23):
+- Added RDP listener certificate inspection: `host:3389` probes HTTPS, SQL Server and RDP concurrently; `rdp://host[:port]` selects RDP directly (3389 by default). Reads the certificate from RDP TLS negotiation without sending credentials.
 - Refactored PKI health checks into dedicated functions for CA metadata, certificates and CRLs.
 - Restored discovery of active CA CRL distribution points and Delta CRLs from Freshest CRL URLs.
     Unreferenced AD CDP publications are not treated as active endpoints.
@@ -661,7 +662,7 @@ function Read-CertObjectAndSAN {
 
 function Import-CertToFormValues {
     $oDialogResult = Read-CLIDialogValidatedValue `
-        -Header "Enter a certificate file path, an HTTPS URL, a host[:port] (HTTPS, else SQL Server) or a SQL Server instance (server\instance) to import" `
+        -Header "Enter a certificate file path, an HTTPS or RDP URL, a host[:port], or a SQL Server instance (server\instance) to import" `
         -PropertyName "Path / URL / Host" `
         -ValidationMethod { param($v) return ($v.Trim().Length -gt 0) } `
         -ErrorMessage "Value cannot be empty" `
@@ -2848,9 +2849,8 @@ function Read-CertificateFile {
 }
 
 function Get-CertificateFromHostRace {
-    # Reads the certificate of host:port over HTTPS and SQL Server (TDS) at the same time; the first
-    # attempt that returns a certificate wins. A SQL Server port may keep a TLS attempt waiting, and
-    # the other way round, so trying one after the other could be slow.
+    # Reads the certificate of host:port over HTTPS, SQL Server (TDS) and RDP concurrently;
+    # the first attempt that returns a certificate wins.
     # The losing attempt is asked to stop and ends in the background (bounded by its own timeout).
     Param(
         [Parameter(Mandatory)]
@@ -2858,15 +2858,16 @@ function Get-CertificateFromHostRace {
         [Parameter(Mandatory)]
         [int]$Port
     )
-    # Each attempt runs in its own runspace, with the two functions it needs
+    # Each attempt runs in its own runspace, with the network functions it needs
     $oIss = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault()
-    foreach ($sFunction in "Get-CertificateFromUrl", "Get-CertificateFromSqlServer") {
+    foreach ($sFunction in "Get-CertificateFromUrl", "Get-CertificateFromSqlServer", "Get-CertificateFromRDP") {
         $oIss.Commands.Add((New-Object System.Management.Automation.Runspaces.SessionStateFunctionEntry($sFunction, (Get-Command $sFunction).Definition)))
     }
     $sHostOnly = $HostName.Trim("[", "]")
     $aAttempts = @(
         [pscustomobject]@{ Name = "HTTPS"; Script = 'param($h, $p) Get-CertificateFromUrl -Url "https://${h}:$p"'; Host = $HostName; PS = $null; Handle = $null; Error = $null }
         [pscustomobject]@{ Name = "SQL Server"; Script = 'param($h, $p) Get-CertificateFromSqlServer -ComputerName $h -Port $p -TdsOnly'; Host = $sHostOnly; PS = $null; Handle = $null; Error = $null }
+        [pscustomobject]@{ Name = "RDP"; Script = 'param($h, $p) Get-CertificateFromRDP -ComputerName $h -Port $p'; Host = $sHostOnly; PS = $null; Handle = $null; Error = $null }
     )
     foreach ($oAttempt in $aAttempts) {
         $oAttempt.PS = [PowerShell]::Create($oIss).AddScript($oAttempt.Script).AddArgument($oAttempt.Host).AddArgument($Port)
@@ -2913,10 +2914,10 @@ function Get-CertificateFromHostRace {
 function Get-CertificateFromInput {
     # Loads the certificates designated by:
     #   - a file path
-    #   - an HTTPS URL
+    #   - an HTTPS URL or rdp://server[:port] (3389 by default)
     #   - "server\instance[,port]" or "server,port": SQL Server syntaxes (without port, the port of
     #     the instance is asked to the SQL Server Browser)
-    #   - "host[:port]" (port 443 by default): HTTPS and SQL Server at the same time, first answer wins
+    #   - "host[:port]" (port 443 by default): HTTPS, SQL Server and RDP at the same time, first answer wins
     # For a server, the certificate it presents to its clients is returned.
     Param(
         [Parameter(Mandatory)]
@@ -2926,6 +2927,15 @@ function Get-CertificateFromInput {
     if ($sInput -match '^https://.+') {
         Write-Host "Fetching certificate from $sInput ..." -ForegroundColor Cyan
         return Get-CertificateFromUrl -Url $sInput
+    }
+    if ($sInput -match '^rdp://') {
+        $oRdpUri = [Uri]$sInput
+        if (-not $oRdpUri.Host -or $oRdpUri.Port -eq 0 -or $oRdpUri.UserInfo -or $oRdpUri.Query -or $oRdpUri.Fragment -or $oRdpUri.AbsolutePath -notin @('', '/')) {
+            throw "Invalid RDP URL: $sInput"
+        }
+        $iRdpPort = if ($oRdpUri.Port -gt 0) { $oRdpUri.Port } else { 3389 }
+        Write-Host "Fetching RDP certificate from $($oRdpUri.Host):$iRdpPort ..." -ForegroundColor Cyan
+        return Get-CertificateFromRDP -ComputerName $oRdpUri.Host -Port $iRdpPort
     }
     if (Test-Path -LiteralPath $sInput -PathType Leaf) {
         return Read-CertificateFile -Path $sInput
@@ -2941,10 +2951,10 @@ function Get-CertificateFromInput {
     if ($oHostPort.Success) {
         $sHost = $oHostPort.Groups["Host"].Value
         $iPort = if ($oHostPort.Groups["Port"].Success) { [int]$oHostPort.Groups["Port"].Value } else { 443 }
-        Write-Host "Fetching certificate from ${sHost}:$iPort (HTTPS and SQL Server at the same time) ..." -ForegroundColor Cyan
+        Write-Host "Fetching certificate from ${sHost}:$iPort (HTTPS, SQL Server and RDP at the same time) ..." -ForegroundColor Cyan
         return Get-CertificateFromHostRace -HostName $sHost -Port $iPort
     }
-    throw "'$sInput' is neither an existing file, an HTTPS URL, a host[:port] nor a SQL Server instance (server\instance)"
+    throw "'$sInput' is neither an existing file, an HTTPS or RDP URL, a host[:port] nor a SQL Server instance (server\instance)"
 }
 
 function Get-SortedCertificateChain {
@@ -3377,7 +3387,7 @@ function Show-Certificate_CLI {
 
         if (Test-DialogAction $oFolderSel -Action "Other") {
             $oInput = Read-CLIDialogValidatedValue `
-                -Header "Enter a certificate file path, an HTTPS URL, a host[:port] (HTTPS, else SQL Server) or a SQL Server instance (server\instance)" `
+                -Header "Enter a certificate file path, an HTTPS or RDP URL, a host[:port], or a SQL Server instance (server\instance)" `
                 -PropertyName "Path / URL / Host" `
                 -ValidationMethod { param($v) return ($v.Trim().Length -gt 0) } `
                 -ErrorMessage "Value cannot be empty" `
