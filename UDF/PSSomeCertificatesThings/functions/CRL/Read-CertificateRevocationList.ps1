@@ -43,6 +43,8 @@ function Read-CertificateRevocationList {
         $iIndex++
     }
     $bIsDeltaCRL = $false
+    $dtNextPublish = $null
+    $bNextPublishFound = $false
     $aFreshestCRLUrls = [System.Collections.Generic.List[string]]::new()
     if (($iIndex -lt $aTbs.Count) -and ($aTbs[$iIndex].Tag -eq 0xa0)) {
         $aExplicitExtensions = @(Get-DerChildren -Data $RawData -Parent $aTbs[$iIndex])
@@ -54,6 +56,21 @@ function Read-CertificateRevocationList {
                 if ($aExtensionFields.Count -lt 2) { continue }
                 $sExtensionOID = ConvertFrom-DerObjectIdentifier -Data $RawData -Element $aExtensionFields[0]
                 if ($sExtensionOID -eq '2.5.29.27') { $bIsDeltaCRL = $true }
+                if ($sExtensionOID -eq '1.3.6.1.4.1.311.21.4') {
+                    if ($bNextPublishFound) { throw 'Duplicate Next CRL Publish extension.' }
+                    $bNextPublishFound = $true
+                    $iValueIndex = 1
+                    if ($aExtensionFields[$iValueIndex].Tag -eq 0x01) {
+                        if ($aExtensionFields[$iValueIndex].Length -ne 1) { throw 'Invalid extension critical BOOLEAN.' }
+                        $iValueIndex++
+                    }
+                    if ($aExtensionFields.Count -ne ($iValueIndex + 1)) { throw 'Invalid Next CRL Publish extension fields.' }
+                    $oValue = $aExtensionFields[$iValueIndex]
+                    if ($oValue.Tag -ne 0x04 -or $oValue.Length -eq 0) { throw 'Invalid Next CRL Publish extension value.' }
+                    $oTime = Read-DerElement -Data $RawData -Offset $oValue.ContentStart
+                    if ($oTime.End -ne $oValue.End) { throw 'Invalid Next CRL Publish time encoding.' }
+                    $dtNextPublish = ConvertFrom-DerTime -Data $RawData -Element $oTime
+                }
                 if ($sExtensionOID -eq '2.5.29.46') {
                     $oValue = $aExtensionFields | Where-Object { $_.Tag -eq 0x04 } | Select-Object -Last 1
                     if (-not $oValue -or $oValue.Length -eq 0) { throw 'Freshest CRL extension has no value.' }
@@ -121,6 +138,7 @@ function Read-CertificateRevocationList {
         IssuerRawData = [byte[]]$oIssuer.Encoded
         ThisUpdate = $oThisUpdateValue
         NextUpdate = $oNextUpdateValue
+        NextPublish = $dtNextPublish
         RevokedCount = $iRevokedCount
         IsDelta = $bIsDeltaCRL
         FreshestCRLUrls = $aFreshestCRLUrls.ToArray()

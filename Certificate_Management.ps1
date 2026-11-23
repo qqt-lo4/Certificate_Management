@@ -1663,9 +1663,9 @@ function Show-PKIHealth_CLI {
         }
         if ($oSelection.PSTypeNames -and $oSelection.PSTypeNames[0] -eq 'DialogResult.Value') {
             Write-Host ''
-            foreach ($sProperty in @('Status', 'Authority', 'Check', 'Details', 'URL', 'ThisUpdate', 'NextUpdate')) {
+            foreach ($sProperty in @('Status', 'Authority', 'Check', 'Details', 'URL', 'ThisUpdate', 'NextPublish', 'NextUpdate')) {
                 $oValue = $oSelection.Value.$sProperty
-                if ($sProperty -in @('ThisUpdate', 'NextUpdate') -and $null -ne $oValue) {
+                if ($sProperty -in @('ThisUpdate', 'NextPublish', 'NextUpdate') -and $null -ne $oValue) {
                     $oValue = $oValue.ToLocalTime()
                 }
                 Write-Field -Name $sProperty -Value $oValue

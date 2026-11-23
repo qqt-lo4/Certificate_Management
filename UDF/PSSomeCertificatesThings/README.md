@@ -52,7 +52,7 @@ A PowerShell module for certificate management utilities: PKI and CA operations,
 | `ConvertFrom-DerObjectIdentifier` | Decodes a DER object identifier to dotted-decimal notation |
 | `ConvertFrom-DerTime` | Decodes DER UTCTime and GeneralizedTime values as UTC |
 | `Read-CertificateRevocationList` | Decodes CRL issuer, update dates, revoked-entry count and signature status |
-| `Test-CertificateRevocationList` | Evaluates CRL freshness by absolute expiry days (`-ExpiringWithinDays`) or relative remaining-validity percentages (default 25% warning / 15% critical), and can require a base or delta CRL |
+| `Test-CertificateRevocationList` | Evaluates CRL freshness by expiry days or by the NextPublish-to-NextUpdate window (25% warning / 50% critical); without a usable window, falls back to remaining-validity percentages (default 25% / 15%) |
 
 ## Requirements
 

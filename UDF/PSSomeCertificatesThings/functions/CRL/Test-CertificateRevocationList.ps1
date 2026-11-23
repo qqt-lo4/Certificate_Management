@@ -3,14 +3,19 @@ function Test-CertificateRevocationList {
     .SYNOPSIS
         Evaluates the freshness and signature status of a DER-encoded CRL.
 
+    .DESCRIPTION
+        In percentage mode, a usable NextPublish-to-NextUpdate window is
+        evaluated at 25% elapsed for Warning and 50% elapsed for Critical.
+        If the window is unavailable, remaining-validity thresholds apply.
+
     .PARAMETER ExpiringWithinDays
         Absolute-day mode: report Warning when an unexpired CRL expires within this many days.
 
     .PARAMETER WarningRemainingPercent
-        Percentage mode: report Warning when this percentage or less of the CRL validity interval remains.
+        Fallback percentage mode: report Warning when this percentage or less of the CRL validity interval remains.
 
     .PARAMETER CriticalRemainingPercent
-        Percentage mode: report Critical when this percentage or less of the CRL validity interval remains.
+        Fallback percentage mode: report Critical when this percentage or less of the CRL validity interval remains.
     #>
     [CmdletBinding(DefaultParameterSetName = 'RemainingPercent')]
     Param(
@@ -69,6 +74,14 @@ function Test-CertificateRevocationList {
             if ($iDaysRemaining -le $ExpiringWithinDays -and $sStatus -ne 'Critical') {
                 $sStatus = 'Warning'
                 $aDetails.Add("CRL expires at $($oCRL.NextUpdate.ToLocalTime()).")
+            }
+        } elseif ($null -ne $oCRL.NextPublish -and $oCRL.NextPublish -gt $oCRL.ThisUpdate -and $oCRL.NextPublish -lt $oCRL.NextUpdate) {
+            $dElapsedPercent = [Math]::Max(0.0, 100.0 * (($dtNowUtc - $oCRL.NextPublish).TotalSeconds / ($oCRL.NextUpdate - $oCRL.NextPublish).TotalSeconds))
+            $aDetails.Add(("{0:N1}% of the NextPublish-to-NextUpdate window has elapsed (warning >= 25%, critical >= 50%)." -f $dElapsedPercent))
+            if ($dElapsedPercent -ge 50) {
+                $sStatus = 'Critical'
+            } elseif ($dElapsedPercent -ge 25 -and $sStatus -ne 'Critical') {
+                $sStatus = 'Warning'
             }
         } else {
             $iRemainingPercent = 100 * (($oCRL.NextUpdate - $dtNowUtc).TotalSeconds / $tsValidity.TotalSeconds)

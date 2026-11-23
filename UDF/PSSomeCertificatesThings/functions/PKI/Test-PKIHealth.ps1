@@ -1,306 +1,724 @@
 function Test-PKIHealth {
     <#
     .SYNOPSIS
-        Checks AD CS inventory, CA certificates and published/retrieved CRLs.
+        Checks AD CS inventory, CA certificates and referenced CRL endpoints.
+
+    .DESCRIPTION
+        Reads CA inventory and CA certificates from Active Directory.
+
+        Checks only CRL endpoints referenced by:
+            - certificate CDP extensions
+            - certificate Freshest CRL extensions
+            - active CA CDP URLs from the CA request interface
+            - Freshest CRL extensions in validated base CRLs
+
+        Existing AD CDP objects are not evaluated merely because
+        they exist.
+
+        LDAP CRL publications are checked only when their LDAP URL
+        is discovered as a referenced endpoint.
+
+        Does not query the CA administration interface.
+
+        Delta CRL URLs are discovered automatically from the
+        FreshestCRLUrls property returned by Get-CRL.
+
+        A missing reference is not replaced with a guessed filename.
 
     .PARAMETER ExpiringWithinDays
-        Warn when a CA certificate expires within this many days. Default: 30.
+        Warning threshold for CA certificate expiration.
+        Default: 30 days.
 
     .PARAMETER CRLWarningRemainingPercent
-        Warn when a CRL has this percentage or less of its validity period remaining. Default: 5.
+        Fallback warning threshold when the CRL has no usable publication window.
+        Forwarded to Get-CRL. Default: 5.
 
     .PARAMETER CRLCriticalRemainingPercent
-        Report a CRL as critical when this percentage or less remains. Default: 2.
+        Fallback critical threshold when the CRL has no usable publication window.
+        Forwarded to Get-CRL. Default: 2.
 
     .PARAMETER DownloadTimeoutSeconds
-        Timeout per CRL distribution point download. Default: 8 seconds.
+        Timeout per CRL endpoint download.
+        Default: 8 seconds.
 
     .OUTPUTS
-        PSCustomObject[] with Status, Authority, Check, Details, URL, ThisUpdate and NextUpdate.
+        PSCustomObject[] with:
+            Status
+            Authority
+            Check
+            Details
+            URL
+            ThisUpdate
+            NextUpdate
+            NextPublish
+            DaysRemaining
+            SignatureStatus
+
+    .NOTES
+        Dependencies:
+            Get-ADCA
+            Get-PKIADObjects
+            Get-CertificateURL
+            Get-PKICARevocationUrls
+            Get-CRL
+            New-PKIHealthFinding
+            Test-PKICACertificate
+            Test-PKIAuthorityMetadata
+
+        Get-CRL must be the enriched version using Get-CRLHealthData.
+
+        CRL threshold policy remains delegated to Get-CRL and
+        Test-CertificateRevocationList.
+
+        Active CA CDP discovery uses the CA request interface.
+
+        No raw AD CDP object is checked unless its endpoint
+        is referenced by the inspected certificates, CRLs or CA.
+
+        Coverage is limited to discovered references and reachable CAs.
     #>
+
     [CmdletBinding()]
     Param(
         [ValidateRange(1, 365)]
         [int]$ExpiringWithinDays = 30,
+
         [ValidateRange(1, 99)]
         [int]$CRLWarningRemainingPercent = 5,
+
         [ValidateRange(0, 98)]
         [int]$CRLCriticalRemainingPercent = 2,
+
         [ValidateRange(1, 120)]
         [int]$DownloadTimeoutSeconds = 8
     )
 
-    if ($CRLCriticalRemainingPercent -ge $CRLWarningRemainingPercent) {
-        throw 'CRLCriticalRemainingPercent must be lower than CRLWarningRemainingPercent.'
+    if (
+        $CRLCriticalRemainingPercent -ge
+        $CRLWarningRemainingPercent
+    ) {
+        throw (
+            'CRLCriticalRemainingPercent must be lower than ' +
+            'CRLWarningRemainingPercent.'
+        )
     }
+
     $aFindings = [System.Collections.Generic.List[object]]::new()
-    $dtNowUtc = [DateTime]::UtcNow
-    $addFinding = {
-        Param($Status, $Authority, $Check, $Details, $URL, $ThisUpdate, $NextUpdate)
-        $aFindings.Add([PSCustomObject]@{
-            Status = $Status
-            Authority = $Authority
-            Check = $Check
-            Details = $Details
-            URL = $URL
-            ThisUpdate = $ThisUpdate
-            NextUpdate = $NextUpdate
-        }) | Out-Null
-    }.GetNewClosure()
-
-    $aAuthorities = @()
-    try {
-        $aAuthorities = @(Get-ADCA)
-        & $addFinding 'Healthy' 'Forest' 'AD CA inventory' "$($aAuthorities.Count) CA(s) discovered from AIA and Enrollment Services." $null $null $null
-    } catch {
-        & $addFinding 'Critical' 'Forest' 'AD CA inventory' "Could not query AD CS objects: $_" $null $null $null
-        return $aFindings.ToArray()
-    }
-    if ($aAuthorities.Count -eq 0) {
-        & $addFinding 'Critical' 'Forest' 'AD CA inventory' 'No CA objects were found in Active Directory.' $null $null $null
-        return $aFindings.ToArray()
-    }
-
-    $aPKIObjects = @()
-    try {
-        $aPKIObjects = @(Get-PKIADObjects -Type All -ErrorAction Stop)
-        & $addFinding 'Healthy' 'Forest' 'AD PKI objects' "$($aPKIObjects.Count) AIA, CDP, Root CA, NTAuth and KRA object(s) read." $null $null $null
-    } catch {
-        & $addFinding 'Critical' 'Forest' 'AD PKI objects' "Could not read PKI objects from AD: $_" $null $null $null
-        return $aFindings.ToArray()
-    }
 
     $aCertificates = [System.Collections.Generic.List[object]]::new()
-    foreach ($oPKIObject in $aPKIObjects) {
-        if (-not $oPKIObject.rawData -or $oPKIObject.source -notmatch '^(AIA|Root CA)/') { continue }
-        try {
-            $oCertificate = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2(,[byte[]]$oPKIObject.rawData)
-            if (-not ($aCertificates | Where-Object { $_.Certificate.Thumbprint -eq $oCertificate.Thumbprint })) {
-                $aCertificates.Add([PSCustomObject]@{ Source = $oPKIObject.source; Certificate = $oCertificate })
-            } else {
-                $oCertificate.Dispose()
-            }
-        } catch {
-            & $addFinding 'Warning' $oPKIObject.source 'CA certificate decoding' "Could not decode an AD certificate: $_" $null $null $null
-        }
-    }
 
-    $hActiveADCDPs = @{}
-    $hActiveADCDPsByAuthority = @{}
-    foreach ($oCertificateRecord in $aCertificates) {
-        $sCertificateAuthority = if ($oCertificateRecord.Source -match '^(?:AIA|Root CA)/(.+)$') {
-            $Matches[1]
-        } else {
-            $oCertificateRecord.Certificate.GetNameInfo([System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false)
-        }
-        try {
-            $oURLs = Get-CertificateURL -Cert $oCertificateRecord.Certificate -WarningAction SilentlyContinue
-            foreach ($sURL in @($oURLs.CDP | Where-Object { $_ })) {
-                $sDecodedURL = [Uri]::UnescapeDataString([string]$sURL)
-                $oLDAPPath = [regex]::Match($sDecodedURL, '(?i)^ldap:///([^?]+)')
-                if (-not $oLDAPPath.Success) { continue }
-                $sCDPDN = $oLDAPPath.Groups[1].Value.Trim()
-                $hActiveADCDPs[$sCDPDN] = $true
-                if (-not $hActiveADCDPsByAuthority.ContainsKey($sCertificateAuthority)) {
-                    $hActiveADCDPsByAuthority[$sCertificateAuthority] = @()
-                }
-                $hActiveADCDPsByAuthority[$sCertificateAuthority] += $sCDPDN
-            }
-        } catch {
-            Write-Verbose "Could not inspect LDAP CDP references on '$sCertificateAuthority': $_"
-        }
-    }
+    $aCRLQueue = [System.Collections.Generic.List[object]]::new()
 
+    $hCertificates = @{}
     $hCheckedCRLs = @{}
-    $hCheckedCertificates = @{}
-    foreach ($oAuthority in $aAuthorities) {
-        $sCAName = [string]$oAuthority.Name
-        $sHostName = [string]$oAuthority.dNSHostName
-        $aCAcerts = @($aCertificates | Where-Object {
-            $_.Source -ieq "AIA/$sCAName" -or $_.Certificate.GetNameInfo([System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false) -ieq $sCAName
-        })
-        $bOfflineRoot = -not $sHostName -and @($aCAcerts | Where-Object { $_.Certificate.Subject -eq $_.Certificate.Issuer }).Count -gt 0
-        if (-not $sHostName) {
-            if ($bOfflineRoot) {
-                & $addFinding 'NotApplicable' $sCAName 'Enrollment Service hostname' 'Self-signed root CA has no Enrollment Service; this is normal for an offline or out-of-domain root. The managing host cannot be inferred from this AD object.' $null $null $null
-            } else {
-                & $addFinding 'Critical' $sCAName 'Enrollment Service hostname' 'No DNS hostname is published in Enrollment Services.' $null $null $null
-            }
-        } else {
-            try {
-                Resolve-DnsName -Name $sHostName -ErrorAction Stop | Out-Null
-                & $addFinding 'Healthy' $sCAName 'DNS resolution' "$sHostName resolves." $null $null $null
-            } catch {
-                & $addFinding 'Critical' $sCAName 'DNS resolution' "Could not resolve '$sHostName': $_" $null $null $null
-            }
-        }
 
-        $aTemplates = @($oAuthority.CertificateTemplates | Where-Object { $_ })
-        if ($aTemplates.Count -gt 0) {
-            & $addFinding 'Healthy' $sCAName 'Published templates' "$($aTemplates.Count) template(s) published." $null $null $null
-        } elseif ($bOfflineRoot) {
-            & $addFinding 'NotApplicable' $sCAName 'Published templates' 'Templates are not applicable because this self-signed root CA has no Enrollment Service.' $null $null $null
-        } else {
-            & $addFinding 'Warning' $sCAName 'Published templates' 'No certificate templates are published on this CA.' $null $null $null
-        }
+    # Issuer names for which a base CRL signature was validated.
+    $hValidatedBaseCRLIssuers = @{}
 
-        if ($aCAcerts.Count -eq 0) {
-            & $addFinding 'Critical' $sCAName 'CA certificate in AD' 'No matching CA certificate was found in the AIA/root certificate objects.' $null $null $null
-        }
-        foreach ($oCAcertRecord in $aCAcerts) {
-            $oCAcert = $oCAcertRecord.Certificate
-            if ($oCAcert.Thumbprint) {
-                $hCheckedCertificates[$oCAcert.Thumbprint] = $true
-            } else {
-                & $addFinding 'Warning' $sCAName 'CA certificate thumbprint' 'The decoded CA certificate has no thumbprint.' $null $null $null
-            }
-            $sCertificateRole = if ($oCAcert.Subject -eq $oCAcert.Issuer) { 'Root CA certificate' } else { 'CA certificate' }
-            $dtNotAfterUtc = $oCAcert.NotAfter.ToUniversalTime()
-            if ($oCAcert.NotBefore.ToUniversalTime() -gt $dtNowUtc) {
-                & $addFinding 'Critical' $sCAName $sCertificateRole "Certificate is not valid until $($oCAcert.NotBefore)." $null $null $null
-            } elseif ($dtNotAfterUtc -le $dtNowUtc) {
-                & $addFinding 'Critical' $sCAName $sCertificateRole "Certificate expired on $($oCAcert.NotAfter)." $null $null $null
-            } elseif ($dtNotAfterUtc -le $dtNowUtc.AddDays($ExpiringWithinDays)) {
-                & $addFinding 'Warning' $sCAName $sCertificateRole "Certificate expires on $($oCAcert.NotAfter)." $null $null $null
-            } else {
-                & $addFinding 'Healthy' $sCAName $sCertificateRole "Certificate is valid until $($oCAcert.NotAfter)." $null $null $null
-            }
+    try {
+        # ============================================================
+        # 1. CA inventory.
+        # ============================================================
 
-        }
-
-        $aPublishedCDPs = @($aPKIObjects | Where-Object { $_.source -eq "CDP/$sCAName" })
-        if ($aPublishedCDPs.Count -eq 0 -and $hActiveADCDPsByAuthority.ContainsKey($sCAName)) {
-            & $addFinding 'Critical' $sCAName 'CRL publication in AD' 'The CA certificate references an LDAP CDP, but no matching CDP object was found in AD.' $null $null $null
-        } elseif ($aPublishedCDPs.Count -eq 0) {
-            if ($bOfflineRoot) {
-                & $addFinding 'NotApplicable' $sCAName 'CRL publication in AD' 'No AD CDP object exists for this offline root. Its CDP URL is checked separately when present in the root certificate.' $null $null $null
-            } else {
-                & $addFinding 'NotApplicable' $sCAName 'CRL publication in AD' 'No LDAP CDP reference was found in the CA certificates; AD publication is not configured for this CA.' $null $null $null
-            }
-        }
-    }
-
-    foreach ($oCertificateRecord in $aCertificates) {
-        $oCertificate = $oCertificateRecord.Certificate
-        $sAuthority = $oCertificate.GetNameInfo([System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false)
-        if (-not $hCheckedCertificates.ContainsKey($oCertificate.Thumbprint)) {
-            $hCheckedCertificates[$oCertificate.Thumbprint] = $true
-            $dtNotAfterUtc = $oCertificate.NotAfter.ToUniversalTime()
-            if ($dtNotAfterUtc -le $dtNowUtc) {
-                & $addFinding 'Critical' $sAuthority 'Root/standalone CA certificate' "Certificate expired on $($oCertificate.NotAfter)." $null $null $null
-            } elseif ($dtNotAfterUtc -le $dtNowUtc.AddDays($ExpiringWithinDays)) {
-                & $addFinding 'Warning' $sAuthority 'Root/standalone CA certificate' "Certificate expires on $($oCertificate.NotAfter)." $null $null $null
-            } else {
-                & $addFinding 'Healthy' $sAuthority 'Root/standalone CA certificate' "Certificate is valid until $($oCertificate.NotAfter)." $null $null $null
-            }
-        }
+        $aAuthorities = @()
 
         try {
-            $oURLs = Get-CertificateURL -Cert $oCertificate -WarningAction SilentlyContinue
-            $aCRLQueue = [System.Collections.Generic.List[object]]::new()
-            foreach ($sURL in @($oURLs.CDP | Where-Object { $_ })) {
-                $aCRLQueue.Add([PSCustomObject]@{ URL = [string]$sURL; Type = 'Base' })
+            $aAuthorities = @(
+                Get-ADCA -ErrorAction Stop
+            )
+
+            $sInventoryStatus = if ($aAuthorities.Count -gt 0) {
+                'Healthy'
             }
-            foreach ($sURL in @($oURLs.DeltaCRL | Where-Object { $_ })) {
-                $aCRLQueue.Add([PSCustomObject]@{ URL = [string]$sURL; Type = 'Delta' })
+            else {
+                'Warning'
             }
 
-            $oAuthority = $aAuthorities | Where-Object { $_.Name -ieq $sAuthority -and $_.dNSHostName } | Select-Object -First 1
-            if ($oAuthority) {
-                $oCARequest = $null
-                try {
-                    $oCARequest = New-Object -ComObject CertificateAuthority.Request
-                    $sConfiguration = "$($oAuthority.dNSHostName)\$($oAuthority.Name)"
-                    $sCDPUrls = [string]$oCARequest.GetCAProperty($sConfiguration, 41, 0, 4, 0)
-                    foreach ($sURL in ($sCDPUrls -split '[\r\n]+')) {
-                        if ($sURL.Trim()) { $aCRLQueue.Add([PSCustomObject]@{ URL = $sURL.Trim(); Type = 'Base' }) }
-                    }
-                } catch {
-                    & $addFinding 'Warning' $sAuthority 'CA CRL distribution points' "Could not query active CA CRL URLs: $_" $null $null $null
-                } finally {
-                    if ($oCARequest) { [void][Runtime.InteropServices.Marshal]::ReleaseComObject($oCARequest) }
-                }
-            }
-
-            for ($iCRLIndex = 0; $iCRLIndex -lt $aCRLQueue.Count; $iCRLIndex++) {
-                $oCRLRequest = $aCRLQueue[$iCRLIndex]
-                $sURL = $oCRLRequest.URL
-                $sCRLKey = "$($oCRLRequest.Type)|$sURL"
-                if ($hCheckedCRLs.ContainsKey($sCRLKey)) { continue }
-                $hCheckedCRLs[$sCRLKey] = $true
-                $sCheck = if ($oCRLRequest.Type -eq 'Delta') { 'Delta CRL endpoint' } else { 'CRL endpoint' }
-                try {
-                    $aRawCRL = Get-CRL -URL $sURL -DownloadTimeout $DownloadTimeoutSeconds -ReturnRawData -ErrorAction Stop
-                    if ($aRawCRL -isnot [byte[]]) { throw "The CRL endpoint did not return DER bytes: $aRawCRL" }
-                    $oCRL = Read-CertificateRevocationList -RawData $aRawCRL
-                    $oCRLIssuer = $aCertificates | Where-Object {
-                        [System.Linq.Enumerable]::SequenceEqual([byte[]]$_.Certificate.SubjectName.RawData, [byte[]]$oCRL.IssuerRawData)
-                    } | Select-Object -First 1
-                    $oCRLHealth = if ($oCRLIssuer) {
-                        Test-CertificateRevocationList -RawData $aRawCRL -IssuerCertificate $oCRLIssuer.Certificate -ExpectedType $oCRLRequest.Type -WarningRemainingPercent $CRLWarningRemainingPercent -CriticalRemainingPercent $CRLCriticalRemainingPercent
-                    } else {
-                        Test-CertificateRevocationList -RawData $aRawCRL -ExpectedType $oCRLRequest.Type -WarningRemainingPercent $CRLWarningRemainingPercent -CriticalRemainingPercent $CRLCriticalRemainingPercent
-                    }
-                    $sCRLAuthority = if ($oCRLIssuer) { $oCRLIssuer.Certificate.GetNameInfo([System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false) } else { $sAuthority }
-                    & $addFinding $oCRLHealth.Status $sCRLAuthority $sCheck $oCRLHealth.Details $sURL $oCRLHealth.ThisUpdate $oCRLHealth.NextUpdate
-                    if ($oCRLRequest.Type -eq 'Base' -and -not $oCRL.IsDelta -and $oCRLHealth.SignatureStatus -eq 'Valid') {
-                        foreach ($sDeltaURL in @($oCRL.FreshestCRLUrls | Where-Object { $_ })) {
-                            $aCRLQueue.Add([PSCustomObject]@{ URL = [string]$sDeltaURL; Type = 'Delta' })
-                        }
-                    }
-                } catch {
-                    & $addFinding 'Critical' $sAuthority $sCheck "Could not download or decode CRL: $_" $sURL $null $null
-                }
-            }
-        } catch {
-            & $addFinding 'Warning' $sAuthority 'CRL distribution points' "Could not read CDP URLs: $_" $null $null $null
+            $aFindings.Add(
+                (New-PKIHealthFinding `
+                    -Status $sInventoryStatus `
+                    -Authority 'Forest' `
+                    -Check 'AD CA inventory' `
+                    -Details (
+                        "$($aAuthorities.Count) CA object(s) discovered."
+                    ))
+            )
         }
-    }
+        catch {
+            $aFindings.Add(
+                (New-PKIHealthFinding `
+                    -Status Critical `
+                    -Authority 'Forest' `
+                    -Check 'AD CA inventory' `
+                    -Details (
+                        'Could not query CA inventory: ' +
+                        $_.Exception.Message
+                    ))
+            )
 
-    foreach ($oPublishedCDP in @($aPKIObjects | Where-Object { $_.source -like 'CDP/*' })) {
-        $sAuthority = [string]$oPublishedCDP.issuer
-        $sPublishedCDPDN = [string]$oPublishedCDP.distinguishedName
-        if (-not $sPublishedCDPDN -or -not $hActiveADCDPs.ContainsKey($sPublishedCDPDN)) {
-            & $addFinding 'NotApplicable' $sAuthority 'Unreferenced AD CDP object' "AD CDP '$($oPublishedCDP.subject)' is present but is not referenced by any CA certificate CDP; it may be a stale publication." $null $null $null
-            continue
+            # Continue: PKI certificate objects may still be readable.
         }
-        foreach ($sCRLProperty in @('CRLData', 'DeltaCRLData')) {
-            $aPublishedCRLs = @()
-            foreach ($oBlob in @($oPublishedCDP.$sCRLProperty)) {
-                if ($oBlob -is [byte[]] -and $oBlob.Length -gt 0) { $aPublishedCRLs += ,$oBlob }
-            }
-            if ($aPublishedCRLs.Count -eq 0) {
-                if ($sCRLProperty -eq 'CRLData') {
-                    & $addFinding 'Critical' $sAuthority 'CRL publication in AD' "CDP '$($oPublishedCDP.subject)' has no base CRL data." $null $null $null
-                }
+
+        # ============================================================
+        # 2. Read PKI objects.
+        #
+        # CDP objects may be present in this inventory, but their
+        # presence alone does not enable a health check.
+        # ============================================================
+
+        $aPKIObjects = @(
+            Get-PKIADObjects -Type All -ErrorAction Stop
+        )
+
+        $aFindings.Add(
+            (New-PKIHealthFinding `
+                -Status Healthy `
+                -Authority 'Forest' `
+                -Check 'AD PKI objects' `
+                -Details (
+                    "$($aPKIObjects.Count) PKI object(s) read. " +
+                    'Unreferenced AD CDP publications are not evaluated.'
+                ))
+        )
+
+        # ============================================================
+        # 3. Decode and deduplicate CA certificates.
+        # ============================================================
+
+        foreach ($oPKIObject in $aPKIObjects) {
+            if (
+                -not $oPKIObject.rawData -or
+                $oPKIObject.source -notmatch '^(AIA|Root CA)/'
+            ) {
                 continue
             }
-            foreach ($aRawCRL in $aPublishedCRLs) {
-                try {
-                    $oCRL = Read-CertificateRevocationList -RawData $aRawCRL
-                    $sExpectedType = if ($sCRLProperty -eq 'DeltaCRLData') { 'Delta' } else { 'Base' }
-                    $oCRLIssuer = $aCertificates | Where-Object {
-                        [System.Linq.Enumerable]::SequenceEqual([byte[]]$_.Certificate.SubjectName.RawData, [byte[]]$oCRL.IssuerRawData)
-                    } | Select-Object -First 1
-                    $oCRLHealth = if ($oCRLIssuer) {
-                        Test-CertificateRevocationList -RawData $aRawCRL -IssuerCertificate $oCRLIssuer.Certificate -ExpectedType $sExpectedType -WarningRemainingPercent $CRLWarningRemainingPercent -CriticalRemainingPercent $CRLCriticalRemainingPercent
-                    } else {
-                        Test-CertificateRevocationList -RawData $aRawCRL -ExpectedType $sExpectedType -WarningRemainingPercent $CRLWarningRemainingPercent -CriticalRemainingPercent $CRLCriticalRemainingPercent
+
+            $oCertificate = $null
+
+            try {
+                $oCertificate =
+                    [System.Security.Cryptography.X509Certificates.X509Certificate2]::new(
+                        [byte[]]$oPKIObject.rawData
+                    )
+
+                $sThumbprint = $oCertificate.Thumbprint
+
+                if ($hCertificates.ContainsKey($sThumbprint)) {
+                    $oExistingRecord = $hCertificates[$sThumbprint]
+
+                    if (
+                        -not $oExistingRecord.Sources.Contains(
+                            [string]$oPKIObject.source
+                        )
+                    ) {
+                        $oExistingRecord.Sources.Add(
+                            [string]$oPKIObject.source
+                        )
                     }
-                    $sCheck = if ($sCRLProperty -eq 'DeltaCRLData') { 'Delta CRL publication in AD' } else { 'CRL publication in AD' }
-                    $sDetails = "AD CDP '$($oPublishedCDP.subject)'. $($oCRLHealth.Details)"
-                    & $addFinding $oCRLHealth.Status $sAuthority $sCheck $sDetails $null $oCRLHealth.ThisUpdate $oCRLHealth.NextUpdate
-                } catch {
-                    & $addFinding 'Critical' $sAuthority 'CRL publication in AD' "Published CRL '$($oPublishedCDP.subject)' could not be decoded: $_" $null $null $null
+
+                    $oCertificate.Dispose()
+                    $oCertificate = $null
+                }
+                else {
+                    $aSources =
+                        [System.Collections.Generic.List[string]]::new()
+
+                    $aSources.Add(
+                        [string]$oPKIObject.source
+                    )
+
+                    $oRecord = [PSCustomObject]@{
+                        Sources     = $aSources
+                        Certificate = $oCertificate
+                    }
+
+                    $aCertificates.Add($oRecord)
+                    $hCertificates[$sThumbprint] = $oRecord
+
+                    # Ownership transferred to aCertificates.
+                    $oCertificate = $null
+                }
+            }
+            catch {
+                $aFindings.Add(
+                    (New-PKIHealthFinding `
+                        -Status Warning `
+                        -Authority ([string]$oPKIObject.source) `
+                        -Check 'CA certificate decoding' `
+                        -Details $_.Exception.Message)
+                )
+            }
+            finally {
+                if ($null -ne $oCertificate) {
+                    $oCertificate.Dispose()
                 }
             }
         }
+
+        if ($aCertificates.Count -eq 0) {
+            $aFindings.Add(
+                (New-PKIHealthFinding `
+                    -Status Critical `
+                    -Authority 'Forest' `
+                    -Check 'CA certificates in AD' `
+                    -Details 'No CA certificate could be decoded.')
+            )
+        }
+
+        # ============================================================
+        # 4. Authority metadata.
+        # ============================================================
+
+        foreach ($oAuthority in $aAuthorities) {
+            $sCAName = [string]$oAuthority.Name
+
+            $aMatchingCertificates = @(
+                $aCertificates |
+                    Where-Object {
+                        $_.Sources -icontains "AIA/$sCAName" -or
+                        $_.Sources -icontains "Root CA/$sCAName" -or
+                        $_.Certificate.GetNameInfo(
+                            [System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName,
+                            $false
+                        ) -ieq $sCAName
+                    }
+            )
+
+            try {
+                foreach ($oFinding in (
+                    Test-PKIAuthorityMetadata `
+                        -Authority $oAuthority `
+                        -CertificateRecords $aMatchingCertificates `
+                        -ErrorAction Stop
+                )) {
+                    $aFindings.Add($oFinding)
+                }
+            }
+            catch {
+                $aFindings.Add(
+                    (New-PKIHealthFinding `
+                        -Status Unknown `
+                        -Authority $sCAName `
+                        -Check 'CA metadata evaluation' `
+                        -Details $_.Exception.Message)
+                )
+            }
+
+            $sHostName = [string]$oAuthority.dNSHostName
+
+            if (-not [string]::IsNullOrWhiteSpace($sHostName)) {
+                try {
+                    foreach ($sURL in @(
+                        Get-PKICARevocationUrls `
+                            -ComputerName $sHostName `
+                            -CAName $sCAName `
+                            -ErrorAction Stop
+                    )) {
+                        $aCRLQueue.Add(
+                            [PSCustomObject]@{
+                                URL               = $sURL
+                                Type              = 'Base'
+                                ExpectedAuthority = $sCAName
+                            }
+                        )
+                    }
+                }
+                catch {
+                    $aFindings.Add(
+                        (New-PKIHealthFinding `
+                            -Status Unknown `
+                            -Authority $sCAName `
+                            -Check 'CA CRL distribution points discovery' `
+                            -Details $_.Exception.Message)
+                    )
+                }
+            }
+        }
+
+        # ============================================================
+        # 5. Certificate health and endpoint discovery.
+        # ============================================================
+
+        foreach ($oRecord in $aCertificates) {
+            $oCertificate = $oRecord.Certificate
+
+            $sAuthority = $oCertificate.GetNameInfo(
+                [System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName,
+                $false
+            )
+
+            if ([System.String]::IsNullOrWhiteSpace($sAuthority)) {
+                $sAuthority = $oCertificate.Subject
+            }
+
+            try {
+                $oCertificateFinding = Test-PKICACertificate `
+                    -Certificate $oCertificate `
+                    -Authority $sAuthority `
+                    -ExpiringWithinDays $ExpiringWithinDays `
+                    -ErrorAction Stop
+
+                $aFindings.Add($oCertificateFinding)
+            }
+            catch {
+                $aFindings.Add(
+                    (New-PKIHealthFinding `
+                        -Status Unknown `
+                        -Authority $sAuthority `
+                        -Check 'CA certificate evaluation' `
+                        -Details $_.Exception.Message)
+                )
+            }
+
+            # The CDP in this certificate normally concerns its issuer.
+            $sExpectedAuthority = $oCertificate.GetNameInfo(
+                [System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName,
+                $true
+            )
+
+            if (
+                [System.String]::IsNullOrWhiteSpace(
+                    $sExpectedAuthority
+                )
+            ) {
+                $sExpectedAuthority = $oCertificate.Issuer
+            }
+
+            try {
+                $oURLs = Get-CertificateURL `
+                    -Cert $oCertificate `
+                    -WarningAction SilentlyContinue `
+                    -ErrorAction Stop
+
+                foreach ($sURL in @($oURLs.CDP)) {
+                    if (
+                        [System.String]::IsNullOrWhiteSpace(
+                            [string]$sURL
+                        )
+                    ) {
+                        continue
+                    }
+
+                    $aCRLQueue.Add(
+                        [PSCustomObject]@{
+                            URL = ([string]$sURL).Trim()
+                            Type = 'Base'
+                            ExpectedAuthority = $sExpectedAuthority
+                        }
+                    )
+                }
+
+                foreach ($sURL in @($oURLs.DeltaCRL)) {
+                    if (
+                        [System.String]::IsNullOrWhiteSpace(
+                            [string]$sURL
+                        )
+                    ) {
+                        continue
+                    }
+
+                    $aCRLQueue.Add(
+                        [PSCustomObject]@{
+                            URL = ([string]$sURL).Trim()
+                            Type = 'Delta'
+                            ExpectedAuthority = $sExpectedAuthority
+                        }
+                    )
+                }
+            }
+            catch {
+                $aFindings.Add(
+                    (New-PKIHealthFinding `
+                        -Status Warning `
+                        -Authority $sAuthority `
+                        -Check 'CRL distribution points discovery' `
+                        -Details $_.Exception.Message)
+                )
+            }
+        }
+
+        # ============================================================
+        # 6. Referenced endpoint checks.
+        #
+        # The queue can grow when a validated base CRL exposes
+        # Freshest CRL URLs.
+        # ============================================================
+
+        for (
+            $iCRLIndex = 0;
+            $iCRLIndex -lt $aCRLQueue.Count;
+            $iCRLIndex++
+        ) {
+            $oRequest = $aCRLQueue[$iCRLIndex]
+            $sURL = [string]$oRequest.URL
+            $sKey = "$($oRequest.Type)|$sURL"
+
+            if ($hCheckedCRLs.ContainsKey($sKey)) {
+                continue
+            }
+
+            $hCheckedCRLs[$sKey] = $true
+
+            $sCheck = if ($oRequest.Type -eq 'Delta') {
+                'Delta CRL endpoint'
+            }
+            else {
+                'CRL endpoint'
+            }
+
+            Write-Verbose (
+                "Checking {0} CRL endpoint: {1}" -f
+                $oRequest.Type,
+                $sURL
+            )
+
+            try {
+                $hCRLParameters = @{
+                    URL                      = $sURL
+                    DownloadTimeout          = $DownloadTimeoutSeconds
+                    Certificates             = $aCertificates.ToArray()
+                    ExpectedType             = $oRequest.Type
+                    WarningRemainingPercent  = $CRLWarningRemainingPercent
+                    CriticalRemainingPercent = $CRLCriticalRemainingPercent
+                    ErrorAction              = 'Stop'
+                }
+
+                $oCRL = Get-CRL @hCRLParameters
+
+                if ($null -eq $oCRL) {
+                    throw 'Get-CRL returned no result.'
+                }
+
+                $sCRLAuthority = if (
+                    -not [System.String]::IsNullOrWhiteSpace(
+                        [string]$oCRL.Authority
+                    )
+                ) {
+                    [string]$oCRL.Authority
+                }
+                else {
+                    [string]$oRequest.ExpectedAuthority
+                }
+
+                $sStatus = [string]$oCRL.Status
+                $sDetails = [string]$oCRL.Details
+
+                if (
+                    $oCRL.SignatureStatus -ne 'Valid' -and
+                    $sStatus -notin @('Critical', 'Unknown')
+                ) {
+                    $sStatus = 'Unknown'
+
+                    $sDetails += (
+                        ' Signature validation was not successful: ' +
+                        "$($oCRL.SignatureStatus)."
+                    )
+                }
+
+                $aFindings.Add(
+                    (New-PKIHealthFinding `
+                        -Status $sStatus `
+                        -Authority $sCRLAuthority `
+                        -Check $sCheck `
+                        -Details $sDetails `
+                        -URL $sURL `
+                        -ThisUpdate $oCRL.ThisUpdate `
+                        -NextUpdate $oCRL.NextUpdate `
+                        -NextPublish $oCRL.NextPublish `
+                        -DaysRemaining $oCRL.DaysRemaining `
+                        -SignatureStatus $oCRL.SignatureStatus)
+                )
+
+                # ----------------------------------------------------
+                # Automatic Delta discovery from a validated base CRL.
+                # ----------------------------------------------------
+
+                if (
+                    $oRequest.Type -eq 'Base' -and
+                    -not $oCRL.IsDelta -and
+                    $oCRL.SignatureStatus -eq 'Valid'
+                ) {
+                    $sIssuerKey = [System.Convert]::ToBase64String(
+                        [byte[]]$oCRL.IssuerRawData
+                    )
+
+                    $hValidatedBaseCRLIssuers[$sIssuerKey] = $true
+
+                    $aDeltaURLs = @(
+                        $oCRL.FreshestCRLUrls |
+                            Where-Object {
+                                -not [System.String]::IsNullOrWhiteSpace(
+                                    [string]$_
+                                )
+                            }
+                    )
+
+                    Write-Verbose (
+                        "Validated base CRL '{0}': {1} Freshest CRL URL(s)." -f
+                        $sURL,
+                        $aDeltaURLs.Count
+                    )
+
+                    foreach ($sDeltaURL in $aDeltaURLs) {
+                        $sDeltaURL = ([string]$sDeltaURL).Trim()
+
+                        Write-Verbose (
+                            "Discovered Delta CRL endpoint: $sDeltaURL"
+                        )
+
+                        $aCRLQueue.Add(
+                            [PSCustomObject]@{
+                                URL               = $sDeltaURL
+                                Type              = 'Delta'
+                                ExpectedAuthority = $sCRLAuthority
+                            }
+                        )
+                    }
+                }
+            }
+            catch {
+                $aFindings.Add(
+                    (New-PKIHealthFinding `
+                        -Status Critical `
+                        -Authority ([string]$oRequest.ExpectedAuthority) `
+                        -Check $sCheck `
+                        -Details $_.Exception.Message `
+                        -URL $sURL)
+                )
+            }
+        }
+
+        # ============================================================
+        # 7. Coverage information.
+        #
+        # Missing discovery is not evidence that a CA is unhealthy.
+        # Report it as Unknown, without checking old AD publications.
+        # ============================================================
+
+        $hReportedIssuerCoverage = @{}
+
+        foreach ($oRecord in $aCertificates) {
+            $oCertificate = $oRecord.Certificate
+
+            $sSubjectKey = [System.Convert]::ToBase64String(
+                $oCertificate.SubjectName.RawData
+            )
+
+            if ($hReportedIssuerCoverage.ContainsKey($sSubjectKey)) {
+                continue
+            }
+
+            $hReportedIssuerCoverage[$sSubjectKey] = $true
+
+            if (
+                $hValidatedBaseCRLIssuers.ContainsKey(
+                    $sSubjectKey
+                )
+            ) {
+                continue
+            }
+
+            $sAuthority = $oCertificate.GetNameInfo(
+                [System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName,
+                $false
+            )
+
+            if ([System.String]::IsNullOrWhiteSpace($sAuthority)) {
+                $sAuthority = $oCertificate.Subject
+            }
+
+            $aFindings.Add(
+                (New-PKIHealthFinding `
+                    -Status Unknown `
+                    -Authority $sAuthority `
+                    -Check 'CRL monitoring coverage' `
+                    -Details (
+                        'No base CRL with a validated signature was ' +
+                        'evaluated for this authority. Endpoint discovery ' +
+                        'may be incomplete, or a discovered endpoint ' +
+                        'could not be validated. Unreferenced AD CDP ' +
+                        'objects were not used as a fallback.'
+                    ))
+            )
+        }
+
+        Write-Verbose (
+            'CRL endpoints discovered after Freshest CRL processing:'
+        )
+
+        foreach ($oRequest in $aCRLQueue) {
+            Write-Verbose (
+                "Type={0}; URL={1}" -f
+                $oRequest.Type,
+                $oRequest.URL
+            )
+        }
+
+        # No additional pass over raw AD CDP objects.
+        #
+        # Referenced LDAP endpoints have already been checked
+        # through Get-CRL, just like HTTP/HTTPS endpoints.
+        #
+        # Existing but unreferenced AD publications are ignored.
+    }
+    catch {
+        $aFindings.Add(
+            (New-PKIHealthFinding `
+                -Status Critical `
+                -Authority 'Forest' `
+                -Check 'PKI health execution' `
+                -Details $_.Exception.Message)
+        )
+    }
+    finally {
+        foreach ($oRecord in $aCertificates) {
+            $oRecord.Certificate.Dispose()
+        }
     }
 
-    $aOverall = @($aFindings | Where-Object Status -eq 'Critical')
-    $sOverall = if ($aOverall.Count -gt 0) { 'Critical' } elseif (@($aFindings | Where-Object Status -eq 'Warning').Count -gt 0) { 'Warning' } elseif (@($aFindings | Where-Object Status -eq 'Unknown').Count -gt 0) { 'Unknown' } else { 'Healthy' }
-    & $addFinding $sOverall 'Forest' 'Overall status' "$(@($aFindings | Where-Object Status -eq 'Critical').Count) critical, $(@($aFindings | Where-Object Status -eq 'Warning').Count) warning finding(s)." $null $null $null
+    # ================================================================
+    # 8. Overall status.
+    # ================================================================
 
-    foreach ($oCertificateRecord in $aCertificates) { $oCertificateRecord.Certificate.Dispose() }
+    $iCritical = @(
+        $aFindings |
+            Where-Object { $_.Status -eq 'Critical' }
+    ).Count
+
+    $iUnknown = @(
+        $aFindings |
+            Where-Object { $_.Status -eq 'Unknown' }
+    ).Count
+
+    $iWarning = @(
+        $aFindings |
+            Where-Object { $_.Status -eq 'Warning' }
+    ).Count
+
+    $sOverall = if ($iCritical -gt 0) {
+        'Critical'
+    }
+    elseif ($iUnknown -gt 0) {
+        'Unknown'
+    }
+    elseif ($iWarning -gt 0) {
+        'Warning'
+    }
+    else {
+        'Healthy'
+    }
+
+    $aFindings.Add(
+        (New-PKIHealthFinding `
+            -Status $sOverall `
+            -Authority 'Forest' `
+            -Check 'Overall status' `
+            -Details (
+                "$iCritical critical, " +
+                "$iUnknown unknown, " +
+                "$iWarning warning finding(s)."
+            ))
+    )
+
     return $aFindings.ToArray()
 }
