@@ -40,7 +40,7 @@ Write-Progress -Activity "Loading script modules" -Status "Loading end" -Percent
 #endregion Include
 
 #region script info
-#scriptVersion=2.11
+#scriptVersion=2.12
 #endregion script info
 
 #region Release notes
@@ -194,6 +194,16 @@ Changed:
     private-key export disabled, adds intermediates to LocalMachine\CA, and grants Read access
     to one or more target-resolvable accounts or groups. Root certificates are not trusted.
 - Added target-side identity resolution and confirmation before the remote certificate import.
+
+2.12 (2026-11-23):
+- Refactored PKI health checks into dedicated functions for CA metadata, certificates and CRLs.
+- Restored discovery of active CA CRL distribution points and Delta CRLs from Freshest CRL URLs.
+    Unreferenced AD CDP publications are not treated as active endpoints.
+- Added NextPublish and publication-window monitoring for base and Delta CRLs: Warning after
+    25% of the NextPublish-to-NextUpdate window has elapsed, Critical after 50%. When the
+    window is unavailable, remaining-validity thresholds are used instead.
+- Added CRL signature verification against matching CA certificates, including renewed CA
+    certificates with the same subject. CRL dates are shown in local time in the health report.
 
 #>
 #endregion Release notes
