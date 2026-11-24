@@ -52,7 +52,9 @@ function Get-CertificateFromUrl {
         [ValidatePattern('^https://')]
         [string]$Url,
         [ValidateRange(1, 300)]
-        [int]$TimeoutSeconds = 10
+        [int]$TimeoutSeconds = 10,
+        [System.Security.Authentication.SslProtocols]$SslProtocol = [System.Security.Authentication.SslProtocols]::None,
+        [ref]$TlsDetails
     )
     $uri = [Uri]$Url
     $iTimeoutMs = $TimeoutSeconds * 1000
@@ -75,10 +77,29 @@ function Get-CertificateFromUrl {
         $callback = [System.Net.Security.RemoteCertificateValidationCallback]{ $true }
         $sslStream = New-Object System.Net.Security.SslStream($tcpClient.GetStream(), $false, $callback)
         try {
-            $sslStream.AuthenticateAsClient($uri.Host)
+            if ($SslProtocol -eq [System.Security.Authentication.SslProtocols]::None) {
+                $sslStream.AuthenticateAsClient($uri.Host)
+            } else {
+                $sslStream.AuthenticateAsClient($uri.Host, $null, $SslProtocol, $false)
+            }
             $oRaw = $sslStream.RemoteCertificate
             if (-not $oRaw) {
                 throw "Remote endpoint did not present a certificate"
+            }
+            if ($TlsDetails) {
+                $hTlsDetails = [ordered]@{
+                    Protocol = $sslStream.SslProtocol.ToString()
+                    CipherAlgorithm = $sslStream.CipherAlgorithm.ToString()
+                    CipherStrength = $sslStream.CipherStrength
+                    KeyExchangeAlgorithm = $sslStream.KeyExchangeAlgorithm.ToString()
+                    KeyExchangeStrength = $sslStream.KeyExchangeStrength
+                    HashAlgorithm = $sslStream.HashAlgorithm.ToString()
+                    HashStrength = $sslStream.HashStrength
+                    CipherSuite = $null
+                }
+                $oCipherSuiteProperty = $sslStream.PSObject.Properties['NegotiatedCipherSuite']
+                if ($oCipherSuiteProperty) { $hTlsDetails.CipherSuite = $oCipherSuiteProperty.Value.ToString() }
+                $TlsDetails.Value = [pscustomobject]$hTlsDetails
             }
             return New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 (, $oRaw.GetRawCertData())
         } finally {

@@ -64,10 +64,11 @@ The expiry report uses `ReportTemplateFilter`, `ReportTemplateExcludeFilter` and
 1. **Source** - Choose a working folder, then one of its certificate files (opened directly when the folder holds only one), or **Other source** to enter:
    - a file path or an HTTPS URL
    - `rdp://host[:port]` (port 3389 by default): RDP
-   - `host[:port]` (port 443 by default): HTTPS, SQL Server and RDP are tried at the same time, the first answer wins; use `host:3389` for the default RDP port
+   - `host[:port]` (port 443 by default): direct TLS, SQL Server and RDP are tried at the same time, the first answer wins; use `host:3389` for the default RDP port
    - `server\instance` (the port is asked to the SQL Server Browser) or `server,port`: SQL Server
 
    For a server, the certificate it presents to its clients is shown (no login needed). RDP uses TLS negotiation, including CredSSP, without sending credentials; standard RDP security without TLS does not present a TLS certificate. Every list offers **Back** and **Exit**
+   Network sources also offer TLS diagnostics: TLS 1.0 through 1.3 are tested on separate connections using the detected direct TLS, SQL Server/TDS or RDP transport. Failures can reflect local Schannel policy. The certificate signature is shown, not the TLS handshake signature; cipher-suite names depend on the .NET runtime.
    - Supported files: PEM (bundles included), DER/CER/CRT, P7B, PFX/P12 (the password is asked when needed)
    - When the source holds several certificates, choose the one to view (listed from the leaf to the root)
 2. **Details** - Subject, SAN (one per line, grouped by type), issuer, serial number, validity (days left), SHA1 / SHA256 fingerprints, public key, signature algorithm, key usages, basic constraints, template, SKI / AKI, CDP / AIA / OCSP URLs, private key presence
@@ -155,7 +156,7 @@ These filters can also be edited from the **Settings** menu.
 ## Release Notes
 
 ### 2.12 (2026-11-23)
-- Added RDP listener certificate inspection: `host:3389` tries HTTPS, SQL Server and RDP concurrently, while `rdp://host[:port]` selects RDP directly (port 3389 by default). The certificate is read during RDP TLS negotiation without sending credentials.
+- Added RDP listener certificate inspection: `host:3389` tries direct TLS, SQL Server and RDP concurrently, while `rdp://host[:port]` selects RDP directly (port 3389 by default). The certificate is read during RDP TLS negotiation without sending credentials.
 - Refactored PKI health checks and improved base / Delta CRL discovery, publication-window monitoring and signature verification. CRL dates are shown in local time.
 
 ### 2.11 (2026-11-18)

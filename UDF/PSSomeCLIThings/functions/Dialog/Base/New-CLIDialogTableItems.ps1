@@ -138,7 +138,11 @@ function New-CLIDialogTableItems {
                 $aFormatTableItems[0]
             }
         }
-        New-CLIDialogText -Text $sFirstRowText -ForegroundColor $HeaderForegroundColor -AddNewLine
+        $oHeaderRow = New-CLIDialogText -Text $sFirstRowText -ForegroundColor $HeaderForegroundColor -AddNewLine
+        if ($Space -and -not $Checkbox -and $oHeaderRow.GetTextWidth() -gt $ContentMaxWidth) {
+            $oHeaderRow.Text = $aFormatTableItems[0]
+        }
+        $oHeaderRow
     )
     for ($i = 1; $i -lt $aFormatTableItems.Count; $i++) {
         $hParams = @{
@@ -151,7 +155,7 @@ function New-CLIDialogTableItems {
             FocusedForegroundColor = $FocusedForegroundColor
             FocusedBackgroundColor = $FocusedBackgroundColor
         }
-        $aFormRows += if ($Checkbox) {
+        $oTableItem = if ($Checkbox) {
             if ($EnabledObjectsArray) {
                 if ($EnabledObjectsArray.Value | Where-Object { $_.$EnabledObjectsUniqueProperty -eq $Objects[$i - 1].$EnabledObjectsUniqueProperty }) {
                     New-CLIDialogCheckBox @hParams -Enabled $true -NoAccelerator
@@ -165,6 +169,10 @@ function New-CLIDialogTableItems {
             # Row text is data: do not treat "&" as a keyboard accelerator.
             New-CLIDialogButton @hParams -NoAccelerator
         }
+        if (-not $oTableItem.NoSpace -and $oTableItem.GetTextWidth() -gt (Get-Host).UI.RawUI.WindowSize.Width) {
+            $oTableItem.NoSpace = $true
+        }
+        $aFormRows += $oTableItem
     }
     return $aFormRows
 }

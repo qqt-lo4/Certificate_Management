@@ -196,7 +196,8 @@ Changed:
 - Added target-side identity resolution and confirmation before the remote certificate import.
 
 2.12 (2026-11-23):
-- Added RDP listener certificate inspection: `host:3389` probes HTTPS, SQL Server and RDP concurrently; `rdp://host[:port]` selects RDP directly (3389 by default). Reads the certificate from RDP TLS negotiation without sending credentials.
+- Added RDP listener certificate inspection: `host:3389` probes direct TLS, SQL Server and RDP concurrently; `rdp://host[:port]` selects RDP directly (3389 by default). Reads the certificate from RDP TLS negotiation without sending credentials.
+- Added TLS diagnostics to network certificate viewing: tests TLS 1.0 through 1.3 over the detected direct TLS, SQL Server/TDS or RDP transport, using a separate connection for each version.
 - Refactored PKI health checks into dedicated functions for CA metadata, certificates and CRLs.
 - Restored discovery of active CA CRL distribution points and Delta CRLs from Freshest CRL URLs.
     Unreferenced AD CDP publications are not treated as active endpoints.
@@ -2849,14 +2850,15 @@ function Read-CertificateFile {
 }
 
 function Get-CertificateFromHostRace {
-    # Reads the certificate of host:port over HTTPS, SQL Server (TDS) and RDP concurrently;
+    # Reads the certificate of host:port over direct TLS, SQL Server (TDS) and RDP concurrently;
     # the first attempt that returns a certificate wins.
     # The losing attempt is asked to stop and ends in the background (bounded by its own timeout).
     Param(
         [Parameter(Mandatory)]
         [string]$HostName,
         [Parameter(Mandatory)]
-        [int]$Port
+        [int]$Port,
+        [ref]$ConnectionInfo
     )
     # Each attempt runs in its own runspace, with the network functions it needs
     $oIss = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault()
@@ -2865,7 +2867,7 @@ function Get-CertificateFromHostRace {
     }
     $sHostOnly = $HostName.Trim("[", "]")
     $aAttempts = @(
-        [pscustomobject]@{ Name = "HTTPS"; Script = 'param($h, $p) Get-CertificateFromUrl -Url "https://${h}:$p"'; Host = $HostName; PS = $null; Handle = $null; Error = $null }
+        [pscustomobject]@{ Name = "TLS direct"; Script = 'param($h, $p) Get-CertificateFromUrl -Url "https://${h}:$p"'; Host = $HostName; PS = $null; Handle = $null; Error = $null }
         [pscustomobject]@{ Name = "SQL Server"; Script = 'param($h, $p) Get-CertificateFromSqlServer -ComputerName $h -Port $p -TdsOnly'; Host = $sHostOnly; PS = $null; Handle = $null; Error = $null }
         [pscustomobject]@{ Name = "RDP"; Script = 'param($h, $p) Get-CertificateFromRDP -ComputerName $h -Port $p'; Host = $sHostOnly; PS = $null; Handle = $null; Error = $null }
     )
@@ -2907,7 +2909,15 @@ function Get-CertificateFromHostRace {
     if (-not $oCertificate) {
         throw ("No certificate from ${HostName}:$Port. " + (($aAttempts | ForEach-Object { "$($_.Name): $($_.Error)" }) -join " / "))
     }
-    Write-Host "Certificate presented over $($oWinner.Name)." -ForegroundColor Cyan
+    if ($ConnectionInfo) {
+        $ConnectionInfo.Value = [pscustomobject]@{
+            Transport = $oWinner.Name
+            HostName = $sHostOnly
+            Port = $Port
+            InstanceName = $null
+        }
+    }
+    Write-Host "Certificate retrieved via $($oWinner.Name)." -ForegroundColor Cyan
     return $oCertificate
 }
 
@@ -2917,14 +2927,24 @@ function Get-CertificateFromInput {
     #   - an HTTPS URL or rdp://server[:port] (3389 by default)
     #   - "server\instance[,port]" or "server,port": SQL Server syntaxes (without port, the port of
     #     the instance is asked to the SQL Server Browser)
-    #   - "host[:port]" (port 443 by default): HTTPS, SQL Server and RDP at the same time, first answer wins
+    #   - "host[:port]" (port 443 by default): direct TLS, SQL Server and RDP at the same time, first answer wins
     # For a server, the certificate it presents to its clients is returned.
     Param(
         [Parameter(Mandatory)]
-        [string]$InputString
+        [string]$InputString,
+        [ref]$ConnectionInfo
     )
     $sInput = $InputString.Trim().Trim('"').Trim("'")
     if ($sInput -match '^https://.+') {
+        if ($ConnectionInfo) {
+            $oHttpsUri = [Uri]$sInput
+            $ConnectionInfo.Value = [pscustomobject]@{
+                Transport = "TLS direct"
+                HostName = $oHttpsUri.Host
+                Port = $oHttpsUri.Port
+                InstanceName = $null
+            }
+        }
         Write-Host "Fetching certificate from $sInput ..." -ForegroundColor Cyan
         return Get-CertificateFromUrl -Url $sInput
     }
@@ -2934,6 +2954,14 @@ function Get-CertificateFromInput {
             throw "Invalid RDP URL: $sInput"
         }
         $iRdpPort = if ($oRdpUri.Port -gt 0) { $oRdpUri.Port } else { 3389 }
+        if ($ConnectionInfo) {
+            $ConnectionInfo.Value = [pscustomobject]@{
+                Transport = "RDP"
+                HostName = $oRdpUri.Host
+                Port = $iRdpPort
+                InstanceName = $null
+            }
+        }
         Write-Host "Fetching RDP certificate from $($oRdpUri.Host):$iRdpPort ..." -ForegroundColor Cyan
         return Get-CertificateFromRDP -ComputerName $oRdpUri.Host -Port $iRdpPort
     }
@@ -2944,6 +2972,14 @@ function Get-CertificateFromInput {
         $hSql = @{ ComputerName = $Matches.server }
         if ($Matches.instance) { $hSql.InstanceName = $Matches.instance }
         if ($Matches.port) { $hSql.Port = [int]$Matches.port }
+        if ($ConnectionInfo) {
+            $ConnectionInfo.Value = [pscustomobject]@{
+                Transport = "SQL Server"
+                HostName = $Matches.server
+                Port = if ($Matches.port) { [int]$Matches.port } else { $null }
+                InstanceName = $Matches.instance
+            }
+        }
         Write-Host "Fetching certificate from SQL Server $sInput ..." -ForegroundColor Cyan
         return Get-CertificateFromSqlServer @hSql
     }
@@ -2951,10 +2987,163 @@ function Get-CertificateFromInput {
     if ($oHostPort.Success) {
         $sHost = $oHostPort.Groups["Host"].Value
         $iPort = if ($oHostPort.Groups["Port"].Success) { [int]$oHostPort.Groups["Port"].Value } else { 443 }
-        Write-Host "Fetching certificate from ${sHost}:$iPort (HTTPS, SQL Server and RDP at the same time) ..." -ForegroundColor Cyan
-        return Get-CertificateFromHostRace -HostName $sHost -Port $iPort
+        Write-Host "Fetching certificate from ${sHost}:$iPort (direct TLS, SQL Server and RDP at the same time) ..." -ForegroundColor Cyan
+        return Get-CertificateFromHostRace -HostName $sHost -Port $iPort -ConnectionInfo $ConnectionInfo
     }
     throw "'$sInput' is neither an existing file, an HTTPS or RDP URL, a host[:port] nor a SQL Server instance (server\instance)"
+}
+
+function Show-CertificateTlsDiagnostics_CLI {
+    Param(
+        [Parameter(Mandatory)]
+        [pscustomobject]$ConnectionInfo,
+
+        [Parameter(Mandatory)]
+        [System.Security.Cryptography.X509Certificates.X509Certificate2]$Certificate,
+
+        [object[]]$NavigationButtons
+    )
+
+    $eTls13 = if ([Enum]::GetNames([System.Security.Authentication.SslProtocols]) -contains "Tls13") {
+        [Enum]::Parse([System.Security.Authentication.SslProtocols], "Tls13")
+    } else {
+        $null
+    }
+    $aTlsVersions = @(
+        [pscustomobject]@{ Name = "TLS 1.0"; Protocol = [System.Security.Authentication.SslProtocols]::Tls }
+        [pscustomobject]@{ Name = "TLS 1.1"; Protocol = [System.Security.Authentication.SslProtocols]::Tls11 }
+        [pscustomobject]@{ Name = "TLS 1.2"; Protocol = [System.Security.Authentication.SslProtocols]::Tls12 }
+        [pscustomobject]@{ Name = "TLS 1.3"; Protocol = $eTls13 }
+    )
+    $aResults = foreach ($oTlsVersion in $aTlsVersions) {
+        $sStatus = "No handshake"
+        $sCipher = ""
+        $sKeyExchange = ""
+        $sHash = ""
+        $sCertificateSignature = ""
+        $sCertificateThumbprint = ""
+        $sSameCertificate = ""
+        $sDetails = ""
+
+        if ($null -eq $oTlsVersion.Protocol) {
+            $sStatus = "Unavailable on this client"
+            $sDetails = "This .NET runtime does not expose TLS 1.3."
+        } else {
+            $oTlsDetails = $null
+            $oTestCertificate = $null
+            $hTlsParameters = @{
+                TimeoutSeconds = 5
+                SslProtocol = $oTlsVersion.Protocol
+                TlsDetails = [ref]$oTlsDetails
+            }
+            try {
+                switch ($ConnectionInfo.Transport) {
+                    "TLS direct" {
+                        $sUriHost = $ConnectionInfo.HostName
+                        if ($sUriHost.Contains(":") -and -not $sUriHost.StartsWith("[")) { $sUriHost = "[$sUriHost]" }
+                        $sUrl = "https://${sUriHost}:$($ConnectionInfo.Port)"
+                        $oTestCertificate = Get-CertificateFromUrl -Url $sUrl @hTlsParameters
+                    }
+                    "RDP" {
+                        $oTestCertificate = Get-CertificateFromRDP -ComputerName $ConnectionInfo.HostName -Port $ConnectionInfo.Port @hTlsParameters
+                    }
+                    "SQL Server" {
+                        $hSqlParameters = $hTlsParameters + @{ ComputerName = $ConnectionInfo.HostName }
+                        if ($ConnectionInfo.InstanceName) { $hSqlParameters.InstanceName = $ConnectionInfo.InstanceName }
+                        if ($ConnectionInfo.Port) { $hSqlParameters.Port = [int]$ConnectionInfo.Port }
+                        $oTestCertificate = Get-CertificateFromSqlServer @hSqlParameters
+                    }
+                    default { throw "Unsupported TLS transport '$($ConnectionInfo.Transport)'." }
+                }
+                $sStatus = "Negotiated"
+                $sCipher = $oTlsDetails.CipherSuite
+                if (-not $sCipher -and $oTlsDetails.CipherAlgorithm -ne "None") {
+                    $sCipher = "$($oTlsDetails.CipherAlgorithm) ($($oTlsDetails.CipherStrength) bits)"
+                }
+                if (-not $sCipher) { $sCipher = "Not exposed by this runtime" }
+                $sKeyExchange = if ($oTlsDetails.KeyExchangeAlgorithm -eq "None") {
+                    "Not exposed by this runtime"
+                } elseif ($oTlsDetails.KeyExchangeAlgorithm -eq "44550") {
+                    "ECDH ($($oTlsDetails.KeyExchangeStrength) bits)"
+                } else {
+                    "$($oTlsDetails.KeyExchangeAlgorithm) ($($oTlsDetails.KeyExchangeStrength) bits)"
+                }
+                $sHash = if ($oTlsDetails.HashAlgorithm -eq "None") {
+                    "Not exposed by this runtime"
+                } else {
+                    $oTlsDetails.HashAlgorithm
+                }
+                $sCertificateSignature = $oTestCertificate.SignatureAlgorithm.FriendlyName
+                $sCertificateThumbprint = $oTestCertificate.Thumbprint
+                $sSameCertificate = if ($sCertificateThumbprint -eq $Certificate.Thumbprint) { "Yes" } else { "No" }
+            } catch {
+                $oInner = $_.Exception
+                while ($oInner.InnerException) { $oInner = $oInner.InnerException }
+                $sDetails = $oInner.Message
+            } finally {
+                if ($oTestCertificate) { $oTestCertificate.Dispose() }
+            }
+        }
+
+        [pscustomobject]@{
+            Version = $oTlsVersion.Name
+            Status = $sStatus
+            Cipher = $sCipher
+            KeyExchange = $sKeyExchange
+            Hash = $sHash
+            CertificateSignature = $sCertificateSignature
+            CertificateThumbprint = $sCertificateThumbprint
+            SameCertificate = $sSameCertificate
+            Details = $sDetails
+        }
+    }
+
+    while ($true) {
+        $oSelection = Select-CLIDialogObjectInArray -Objects @($aResults) `
+            -SelectedColumns @(
+                @{ l = "TLS version"; e = { $_.Version } }
+                @{ l = "Status"; e = { $_.Status } }
+                @{ l = "Cipher suite / algorithm"; e = { $_.Cipher }; AutoWidth = $true }
+                @{ l = "Key exchange"; e = { $_.KeyExchange } }
+                @{ l = "Hash"; e = { $_.Hash } }
+                @{ l = "Certificate signature"; e = { $_.CertificateSignature } }
+                @{ l = "Certificate thumbprint"; e = { $_.CertificateThumbprint } }
+                @{ l = "Same certificate"; e = { $_.SameCertificate } }
+                @{ l = "Details"; e = { $_.Details } }
+            ) `
+            -SelectHeaderMessage "TLS diagnostics for $($ConnectionInfo.Transport) at $($ConnectionInfo.HostName):$($ConnectionInfo.Port)" `
+            -OtherMenuItems $NavigationButtons `
+            -SeparatorColor ([System.ConsoleColor]::Blue) -HeaderTextInSeparator -Space -DontShowPageNumberWhenOnlyOnePage #`
+            #-FooterMessage "Each version uses a new connection. Failures may be caused by local Schannel policy. Certificate signature is not the TLS handshake signature; SSLv2 and SSLv3 are not tested."
+        if (Test-DialogAction $oSelection -Action "Exit") { return $oSelection }
+        if (Test-DialogAction $oSelection -Action "Back") { return }
+        if (-not ($oSelection.PSTypeNames -and $oSelection.PSTypeNames[0] -eq "DialogResult.Value")) { return }
+
+        $oTlsResult = $oSelection.Value
+        $sFailureDetails = if ($oTlsResult.Details) { $oTlsResult.Details } else { "None" }
+        $aTlsProperties = @(
+            [pscustomobject]@{ Header = "Result"; Value = $oTlsResult.Status }
+            [pscustomobject]@{ Header = "Cipher suite / algorithm"; Value = if ($oTlsResult.Cipher) { $oTlsResult.Cipher } else { "Not negotiated" } }
+            [pscustomobject]@{ Header = "Key exchange"; Value = if ($oTlsResult.KeyExchange) { $oTlsResult.KeyExchange } else { "Not negotiated" } }
+            [pscustomobject]@{ Header = "Hash algorithm"; Value = if ($oTlsResult.Hash) { $oTlsResult.Hash } else { "Not negotiated" } }
+            [pscustomobject]@{ Header = "Certificate signature"; Value = if ($oTlsResult.CertificateSignature) { $oTlsResult.CertificateSignature } else { "Not available" } }
+            [pscustomobject]@{ Header = "Certificate thumbprint"; Value = if ($oTlsResult.CertificateThumbprint) { $oTlsResult.CertificateThumbprint } else { "Not available" } }
+            [pscustomobject]@{ Header = "Same certificate"; Value = if ($oTlsResult.SameCertificate) { $oTlsResult.SameCertificate } else { "Not available" } }
+            [pscustomobject]@{ Header = "Details"; Value = $sFailureDetails }
+        )
+        $iPropertyHeaderWidth = ($aTlsProperties | ForEach-Object { $_.Header.Length } | Measure-Object -Maximum).Maximum
+        $aDetailRows = @(
+            New-CLIDialogSeparator -AutoLength -ForegroundColor ([System.ConsoleColor]::Blue) -Text "$($oTlsResult.Version) handshake details"
+            foreach ($oTlsProperty in $aTlsProperties) {
+                New-CLIDialogProperty -Header $oTlsProperty.Header -Text $oTlsProperty.Value -SeparatorLocation $iPropertyHeaderWidth
+            }
+            New-CLIDialogSeparator -AutoLength -ForegroundColor ([System.ConsoleColor]::Blue)
+            New-CLIDialogObjectsRow -Row $NavigationButtons
+        )
+        $oDetailsDialog = New-CLIDialog -Rows $aDetailRows
+        $oDetailsResult = Invoke-CLIDialog -InputObject $oDetailsDialog
+        if (Test-DialogAction $oDetailsResult -Action "Exit") { return $oDetailsResult }
+    }
 }
 
 function Get-SortedCertificateChain {
@@ -3212,8 +3401,9 @@ function Show-CertificateSource_CLI {
     $hPfxThumbprints = @{}
     $bPfxSource = $false
     $aAdditionalCertificates = @()
+    $hConnectionInfo = $null
     $aCerts = try {
-        $aSourceCertificates = @(Get-CertificateFromInput -InputString $Source)
+        $aSourceCertificates = @(Get-CertificateFromInput -InputString $Source -ConnectionInfo ([ref]$hConnectionInfo))
         $sSourcePath = $Source.Trim().Trim('"').Trim("'")
         if (Test-Path -LiteralPath $sSourcePath -PathType Leaf) {
             try {
@@ -3308,6 +3498,9 @@ function Show-CertificateSource_CLI {
             [pscustomobject]@{ Id = "NewCert"; Text = "Create a new certificate from this one (subject and SAN pre-filled)" }
             [pscustomobject]@{ Id = "NewCSR"; Text = "Create only a CSR from this one (subject and SAN pre-filled)" }
         )
+        if ($hConnectionInfo) {
+            $aActions += [pscustomobject]@{ Id = "TlsDiagnostics"; Text = "Diagnose TLS protocol support" }
+        }
         if ($aRequestSAN.Count -gt 0) {
             $aActions += [pscustomobject]@{ Id = "CopySAN"; Text = "Copy the DNS / IP SAN to the clipboard (one per line)" }
         }
@@ -3330,6 +3523,10 @@ function Show-CertificateSource_CLI {
                 }
                 "NewCSR" {
                     $null = New-CSR_CLI -OpenSSLPath $OpenSSLPath -ItemsMode -InitialValues (ConvertTo-CertFormValues -Certificate $oCert)
+                }
+                "TlsDiagnostics" {
+                    $oTlsResult = Show-CertificateTlsDiagnostics_CLI -ConnectionInfo $hConnectionInfo -Certificate $oCert -NavigationButtons $aNavButtons
+                    if (Test-DialogAction $oTlsResult -Action "Exit") { return $oTlsResult }
                 }
                 "CopySAN" {
                     Set-Clipboard -Value ($aRequestSAN -join [Environment]::NewLine)

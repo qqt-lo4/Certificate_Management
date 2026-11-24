@@ -28,7 +28,11 @@ function Get-CertificateFromRDP {
         [int]$Port = 3389,
 
         [ValidateRange(1, 300)]
-        [int]$TimeoutSeconds = 10
+        [int]$TimeoutSeconds = 10,
+
+        [System.Security.Authentication.SslProtocols]$SslProtocol = [System.Security.Authentication.SslProtocols]::None,
+
+        [ref]$TlsDetails
     )
 
     $sHostName = $ComputerName.Trim('[', ']')
@@ -82,8 +86,27 @@ function Get-CertificateFromRDP {
         $oCallback = [System.Net.Security.RemoteCertificateValidationCallback]{ $true }
         $oSslStream = New-Object System.Net.Security.SslStream($oStream, $false, $oCallback)
         try {
-            $oSslStream.AuthenticateAsClient($sHostName)
+            if ($SslProtocol -eq [System.Security.Authentication.SslProtocols]::None) {
+                $oSslStream.AuthenticateAsClient($sHostName)
+            } else {
+                $oSslStream.AuthenticateAsClient($sHostName, $null, $SslProtocol, $false)
+            }
             if (-not $oSslStream.RemoteCertificate) { throw 'RDP server did not present a TLS certificate.' }
+            if ($TlsDetails) {
+                $hTlsDetails = [ordered]@{
+                    Protocol = $oSslStream.SslProtocol.ToString()
+                    CipherAlgorithm = $oSslStream.CipherAlgorithm.ToString()
+                    CipherStrength = $oSslStream.CipherStrength
+                    KeyExchangeAlgorithm = $oSslStream.KeyExchangeAlgorithm.ToString()
+                    KeyExchangeStrength = $oSslStream.KeyExchangeStrength
+                    HashAlgorithm = $oSslStream.HashAlgorithm.ToString()
+                    HashStrength = $oSslStream.HashStrength
+                    CipherSuite = $null
+                }
+                $oCipherSuiteProperty = $oSslStream.PSObject.Properties['NegotiatedCipherSuite']
+                if ($oCipherSuiteProperty) { $hTlsDetails.CipherSuite = $oCipherSuiteProperty.Value.ToString() }
+                $TlsDetails.Value = [pscustomobject]$hTlsDetails
+            }
             return New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 (, $oSslStream.RemoteCertificate.GetRawCertData())
         }
         finally {

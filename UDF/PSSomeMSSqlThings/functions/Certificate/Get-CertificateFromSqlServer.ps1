@@ -73,7 +73,9 @@ function Get-CertificateFromSqlServer {
         [int]$Port,
         [ValidateRange(1, 300)]
         [int]$TimeoutSeconds = 10,
-        [switch]$TdsOnly
+        [switch]$TdsOnly,
+        [System.Security.Authentication.SslProtocols]$SslProtocol = [System.Security.Authentication.SslProtocols]::None,
+        [ref]$TlsDetails
     )
     Begin {
         # Stream that carries the TLS handshake inside TDS PRELOGIN packets (type 0x12)
@@ -211,19 +213,43 @@ namespace PSSomeMSSqlThings {
 
         function Invoke-TlsHandshake {
             # Runs the TLS handshake over $Stream and returns the server certificate
-            Param([System.IO.Stream]$Stream, [string]$TargetHost)
+            Param(
+                [System.IO.Stream]$Stream,
+                [string]$TargetHost,
+                [System.Security.Authentication.SslProtocols]$SslProtocol,
+                [ref]$TlsDetails
+            )
             $oCallback = [System.Net.Security.RemoteCertificateValidationCallback]{ $true }
             $oSsl = New-Object System.Net.Security.SslStream($Stream, $true, $oCallback)
             try {
-                try {
-                    # None = protocols chosen by the operating system (.NET Framework 4.7+ / .NET Core)
-                    $oSsl.AuthenticateAsClient($TargetHost, $null, [System.Security.Authentication.SslProtocols]::None, $false)
-                } catch [System.ArgumentException] {
-                    $eProtocols = [System.Security.Authentication.SslProtocols]::Tls12 -bor [System.Security.Authentication.SslProtocols]::Tls11 -bor [System.Security.Authentication.SslProtocols]::Tls
-                    $oSsl.AuthenticateAsClient($TargetHost, $null, $eProtocols, $false)
+                if ($SslProtocol -eq [System.Security.Authentication.SslProtocols]::None) {
+                    try {
+                        # None = protocols chosen by the operating system (.NET Framework 4.7+ / .NET Core)
+                        $oSsl.AuthenticateAsClient($TargetHost, $null, [System.Security.Authentication.SslProtocols]::None, $false)
+                    } catch [System.ArgumentException] {
+                        $eProtocols = [System.Security.Authentication.SslProtocols]::Tls12 -bor [System.Security.Authentication.SslProtocols]::Tls11 -bor [System.Security.Authentication.SslProtocols]::Tls
+                        $oSsl.AuthenticateAsClient($TargetHost, $null, $eProtocols, $false)
+                    }
+                } else {
+                    $oSsl.AuthenticateAsClient($TargetHost, $null, $SslProtocol, $false)
                 }
                 if (-not $oSsl.RemoteCertificate) {
                     throw "The server did not present a certificate"
+                }
+                if ($TlsDetails) {
+                    $hTlsDetails = [ordered]@{
+                        Protocol = $oSsl.SslProtocol.ToString()
+                        CipherAlgorithm = $oSsl.CipherAlgorithm.ToString()
+                        CipherStrength = $oSsl.CipherStrength
+                        KeyExchangeAlgorithm = $oSsl.KeyExchangeAlgorithm.ToString()
+                        KeyExchangeStrength = $oSsl.KeyExchangeStrength
+                        HashAlgorithm = $oSsl.HashAlgorithm.ToString()
+                        HashStrength = $oSsl.HashStrength
+                        CipherSuite = $null
+                    }
+                    $oCipherSuiteProperty = $oSsl.PSObject.Properties['NegotiatedCipherSuite']
+                    if ($oCipherSuiteProperty) { $hTlsDetails.CipherSuite = $oCipherSuiteProperty.Value.ToString() }
+                    $TlsDetails.Value = [pscustomobject]$hTlsDetails
                 }
                 return New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 (, $oSsl.RemoteCertificate.GetRawCertData())
             } finally {
@@ -276,7 +302,7 @@ namespace PSSomeMSSqlThings {
                 throw "Unexpected PRELOGIN answer from $ComputerName (port $iPort)"
             }
             $oTds = New-Object PSSomeMSSqlThings.TdsPreloginStream($oNet)
-            return Invoke-TlsHandshake -Stream $oTds -TargetHost $ComputerName
+            return Invoke-TlsHandshake -Stream $oTds -TargetHost $ComputerName -SslProtocol $SslProtocol -TlsDetails $TlsDetails
         } catch {
             $oTdsError = $_
             Write-Verbose "TDS PRELOGIN failed: $_"
@@ -288,7 +314,7 @@ namespace PSSomeMSSqlThings {
         if ($TdsOnly -or ($oTdsError.Exception.Message -like "*does not support encryption*")) { throw $oTdsError }
         $oTcp = Connect-SqlTcp -ComputerName $ComputerName -Port $iPort -TimeoutMs $iTimeoutMs
         try {
-            return Invoke-TlsHandshake -Stream $oTcp.GetStream() -TargetHost $ComputerName
+            return Invoke-TlsHandshake -Stream $oTcp.GetStream() -TargetHost $ComputerName -SslProtocol $SslProtocol -TlsDetails $TlsDetails
         } catch {
             throw "Cannot read the certificate of SQL Server on $ComputerName (port $iPort): $($oTdsError.Exception.Message)"
         } finally {
